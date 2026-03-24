@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Environment
+.env
+*.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (frontend)
+node_modules/
+.next/
+.nuxt/
+.output/
+.cache/
+.parcel-cache/
+.turbo/
+.vercel/
+.netlify/
+out/
+
+# Vite / build artifacts
+dist/
+*.local
+
+# Package manager locks (keep one, ignore others if needed)
+# yarn.lock
+# package-lock.json
+pnpm-lock.yaml
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Conda
+.conda/
+conda-meta/
+
+# Alembic
+alembic/versions/*.py
+
+# Logs
+*.log
+logs/
+
+# Secrets / keys
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+credentials.json
+
+# Coverage / reports
+coverage/
+*.lcov
+junit.xml
+test-results/
+
+# Temp files
+*.tmp
+*.temp
+*.bak
+*.orig

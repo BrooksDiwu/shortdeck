@@ -10,7 +10,7 @@ A real-time multiplayer poker webapp supporting Texas Hold'em and Shortdeck Hold
 |---|---|
 | Backend | Python, FastAPI |
 | Real-time | WebSockets (FastAPI native) |
-| Active game state | Redis (persistent) |
+| Active game state | Redis (persistent, append-only log + snapshot) |
 | Durable storage | PostgreSQL |
 | Frontend | React + Vite (separate folder) |
 | Infra (prod) | AWS ECS (Fargate) + ElastiCache + RDS |
@@ -212,10 +212,11 @@ class Player:
     stack: int                        # current chip count
     hole_cards: list[Card]
     seat: int                         # 0-indexed seat position
-    status: Literal["active", "folded", "all_in", "sitting_out"]
+    status: Literal["active", "folded", "all_in", "sitting_out", "disconnected"]
     current_bet: int                  # amount bet in current street
     is_admin: bool
     joined_at: datetime               # used for admin transfer order
+    disconnect_at: datetime | None    # set on disconnect, cleared on reconnect
 ```
 
 ### `game/table.py`
@@ -249,13 +250,15 @@ class Table:
     current_action_seat: int
     phase: Literal["waiting", "preflop", "flop", "turn", "river", "showdown", "between_hands"]
     hand_number: int
+    action_seq: int                   # monotonically increasing, incremented on every state mutation
     pending_vote: ModeVote | None
 ```
 
 ### Admin Transfer Rules
 - Admin is the table creator by default
-- If admin disconnects or leaves, rights transfer to `player_join_order[1]` (next oldest player)
-- Admin can force a game mode change without a vote
+- If admin disconnects, rights transfer immediately to `player_join_order[1]` (next oldest connected player)
+- This transfer happens even mid-hand — the new admin can use admin rights starting next hand
+- Admin can force a game mode change without a vote (takes effect next hand)
 - Admin can also initiate a vote for democratic changes
 
 ### Rebuy Rules
@@ -294,9 +297,44 @@ class SidePot:
 - Min raise = size of the previous raise (or big blind if no raise yet)
 - No max raise
 
-### Side Pot Construction
-- Triggered when a player goes all-in for less than the current bet
-- All pots are resolved independently at showdown
+### Side Pot Construction Algorithm
+
+This is one of the most bug-prone areas. The invariant-driven algorithm:
+
+1. Collect each player's total contribution for the hand as `(session_id, total_in)` pairs
+2. Sort by `total_in` ascending
+3. Iterate in sorted order. For each player at index `i`:
+   - `cap = total_in[i]`
+   - `pot_amount = sum(min(p.total_in, cap) for all players) - already_allocated`
+   - `eligible = {players whose total_in >= cap}`
+   - Append `SidePot(amount=pot_amount, eligible_players=eligible)`
+   - `already_allocated += pot_amount`
+4. Any remaining unclaimed chips (from a player who folded after putting in more than any all-in) go to the main pot eligible set
+
+**Odd chip rules:**
+- Odd chips always go to the first active player left of the dealer
+- On a split pot with two boards (extra_flop), each board is evaluated independently:
+  - Board 1 winners split half the pot; Board 2 winners split the other half
+  - If pot is odd, the extra chip goes to Board 1 winner(s)
+  - If a board itself splits (tied hands), odd chip within that half goes to first left of dealer
+
+**All-in on different streets:**
+- `total_in` accumulates across all streets — side pots are only rebuilt at the end of each betting round, not per-action
+- A player who goes all-in on the flop and another on the turn generate separate side pot levels
+
+**Tied hands across side pots:**
+- Each `SidePot` is resolved independently
+- A player can win a side pot and lose the main pot (or vice versa)
+- `find_winners` is called once per pot, not once per hand
+
+### Test cases required (minimum)
+- Single all-in below current bet
+- Two all-ins at different stack sizes
+- All players all-in
+- Fold after contributing more than any all-in player
+- Split pot (tie) with odd chip
+- Dual-board split with odd chip
+- All-in on different streets
 
 ---
 
@@ -314,7 +352,7 @@ class GameEngine:
 ```
 
 ### Hand Lifecycle
-1. `start_hand()` — shuffle deck, deal hole cards (count from `rules.hole_cards_count + extra_hole_card`), post blinds
+1. `start_hand()` — shuffle deck, deal hole cards (count from `rules.hole_cards_count + extra_hole_card`), post blinds, increment `hand_number`
 2. `run_streets()` — iterate streets from `variant.streets()`, applying `rules.street_modifiers`
 3. Per street:
    - Deal community cards to `board.primary` (and `board.secondary` if `rules.extra_flop`)
@@ -335,154 +373,310 @@ def build_streets(self) -> list[StreetConfig]:
 ```
 
 ### Mode Transition (mid-game)
-- Triggered between hands only
-- `TableRules` is swapped atomically
-- Player stacks and hand number carry over
-- A fresh deck is built using the new variant
-- Admin force-change bypasses vote; voted change applies same way
+- Triggered between hands only (checked in `end_hand()`)
+- `TableRules` is swapped atomically in Redis under the table lock
+- Player stacks, hand number, and seat assignments carry over
+- A fresh deck is built using the new variant's `build_deck()`
+- Admin force-change bypasses vote; voted change applies the same way
 
 ### Vote Resolution
 - Vote expires if not resolved before `start_hand()` is called
-- If vote passes before `start_hand()`, rules are swapped for next hand
+- If vote passes before `start_hand()`, rules are swapped for the next hand
 - Ties (equal votes for/against) = vote fails
 
 ---
 
-## Section 7 — WebSocket Layer
+## Section 7 — Concurrency and State Integrity
+
+**Files:** `backend/services/table_service.py`, `backend/websocket/router.py`
+
+Every mutation to table state must be serialized per table to prevent race conditions (e.g. two players acting simultaneously, reconnect racing with a broadcast).
+
+### Distributed Lock (per table)
+
+Uses Redis `SET NX PX` (set-if-not-exists with TTL) as a distributed lock:
+
+```
+Lock key:  table:{table_id}:lock
+TTL:       5000ms (auto-release if process crashes)
+```
+
+Every state mutation follows this pattern:
+1. Acquire lock (`SET table:{id}:lock {token} NX PX 5000`)
+2. Read current state from `table:{id}:state`
+3. Apply action, validate, mutate
+4. Increment `action_seq`
+5. Append event to `table:{id}:log`
+6. Write new state snapshot to `table:{id}:state`
+7. Publish to `table_events:{id}` Pub/Sub channel
+8. Release lock (delete key only if token matches — Lua script)
+
+If lock acquisition fails (another action in progress), return HTTP 409 / WS error and ask client to retry after a short backoff.
+
+### Redis Key Structure (per table)
+
+| Key | Type | Contents |
+|---|---|---|
+| `table:{id}:state` | String (JSON) | Full serialized `Table` snapshot |
+| `table:{id}:log` | List | Append-only action events (JSON), newest at tail |
+| `table:{id}:lock` | String | Lock token, TTL 5s |
+| `session:{id}` | String (JSON) | Serialized `Player` |
+| `table_events:{id}` | Pub/Sub channel | Broadcast events to all WS connections |
+
+### Event Log Entry Format
+
+```json
+{
+  "seq": 42,
+  "hand": 7,
+  "type": "action",
+  "session_id": "abc123",
+  "street": "flop",
+  "action": "raise",
+  "amount": 150,
+  "timestamp": "2025-01-01T00:00:00Z"
+}
+```
+
+All broadcast messages include `seq` and `hand` fields. Clients track the last `seq` seen and detect gaps on reconnect.
+
+---
+
+## Section 8 — WebSocket Layer
 
 **Files:** `backend/websocket/manager.py`, `backend/websocket/router.py`
 
 Handles all real-time communication between clients and the server.
 
+### Authentication
+
+WebSocket connections are authenticated at handshake time:
+- Client passes a signed JWT as a query parameter: `WS /ws/table/{table_id}?token=<jwt>`
+- JWT payload contains `session_id`, `name`, issued-at, expiry (short-lived, e.g. 1h)
+- JWT is signed with `SECRET_KEY` from config using HS256
+- Server validates token before accepting the WebSocket upgrade — rejects with 401 if invalid/expired
+- Seat ownership is validated server-side on every action: the `session_id` in the token must match the seat being acted on
+- Clients refresh tokens via `POST /sessions/refresh` before expiry; existing WS connection remains open
+
 ### `websocket/manager.py` — `ConnectionManager`
 - `connect(table_id, session_id, websocket)`
 - `disconnect(table_id, session_id)`
-- `broadcast(table_id, message)` — send to all players at a table
+- `broadcast(table_id, message)` — sends to all players at a table via Redis Pub/Sub
 - `send_personal(session_id, message)` — private messages (e.g. hole cards)
-- Uses Redis Pub/Sub so broadcasts work across multiple server instances
 
 ### `websocket/router.py`
-- Route: `WS /ws/table/{table_id}`
-- On connect: validate session, add to manager, send current table state
-- Message dispatch: route incoming action messages to engine
-- On disconnect: mark player as sitting out, trigger admin transfer if needed
+- Route: `WS /ws/table/{table_id}?token=<jwt>`
+- On connect: validate JWT, add to manager, send full state snapshot + last `seq`
+- Message dispatch: route incoming messages to engine under table lock
+- On disconnect: start grace window timer, trigger admin transfer if needed
 
 ### Message Format (JSON)
+
+All server → client messages include `seq` (current sequence number) and `hand` (current hand number).
+
 ```json
-// Client → Server (action)
-{
-  "type": "action",
-  "action": "raise",
-  "amount": 100
-}
+// Client → Server (game action)
+{ "type": "action", "action": "raise", "amount": 100 }
 
 // Client → Server (vote)
+{ "type": "vote", "vote": "for" }
+
+// Client → Server (request replay after gap detected)
+{ "type": "replay_request", "from_seq": 38 }
+
+// Server → Client (incremental event — sent on every state change)
 {
-  "type": "vote",
-  "vote": "for"
+  "type": "event",
+  "seq": 42,
+  "hand": 7,
+  "event": "action",
+  "session_id": "abc123",
+  "action": "raise",
+  "amount": 150,
+  "state_patch": { "pot": 450, "current_action_seat": 3 }
 }
 
-// Server → Client (game state update)
+// Server → Client (full state snapshot — sent on connect/reconnect or replay)
 {
-  "type": "state_update",
+  "type": "state_snapshot",
+  "seq": 42,
+  "hand": 7,
   "phase": "flop",
   "board": { "primary": ["Ah", "Kd", "2c"], "secondary": [] },
   "pot": 300,
+  "side_pots": [],
   "players": [...],
-  "current_action_seat": 2
+  "current_action_seat": 2,
+  "rules": { ... }
 }
 
-// Server → Client (private — hole cards)
-{
-  "type": "deal",
-  "hole_cards": ["As", "Kh"]
-}
+// Server → Client (private — hole cards only, never broadcast)
+{ "type": "deal", "seq": 12, "hand": 7, "hole_cards": ["As", "Kh"] }
+
+// Server → Client (error)
+{ "type": "error", "code": "NOT_YOUR_TURN", "message": "..." }
 ```
+
+### Reconnect Protocol
+1. Client reconnects with valid JWT
+2. Server sends full `state_snapshot` with current `seq`
+3. Client compares received `seq` to last known `seq`
+4. If gap exists, client sends `replay_request` with `from_seq`
+5. Server replays events from `table:{id}:log` starting at that seq
+6. Client replays events to reconstruct missed state changes
 
 ### Notes
 - Hole cards are always sent via `send_personal`, never broadcast
-- All monetary values are sent as integers (chips or cents, depending on denomination)
+- All monetary values sent as integers (chips or cents depending on denomination)
+- `state_patch` in incremental events contains only changed fields — clients merge onto local state
 
 ---
 
-## Section 8 — REST API
+## Section 9 — REST API and Auth
 
 **Files:** `backend/api/tables.py`, `backend/api/sessions.py`
 
 Handles pre-game setup. All in-game actions go over WebSocket.
 
+### Auth Model
+
+- `POST /sessions` returns a signed JWT (not a raw `session_id`)
+- JWT is used for both REST calls (Bearer header) and WS connection (query param)
+- All REST endpoints that mutate state require the JWT in `Authorization: Bearer <token>`
+- CSRF is not a concern for REST because we use Bearer tokens (not cookies)
+- Token expiry: 1 hour; refresh via `POST /sessions/refresh` (returns a new token, same `session_id`)
+
 ### `api/sessions.py`
-- `POST /sessions` — create a named session, returns `session_id`
-- `GET /sessions/{session_id}` — validate existing session
+- `POST /sessions` — create a named session, returns `{ token, session_id, expires_at }`
+- `POST /sessions/refresh` — exchange a valid (non-expired) token for a new one
+- `GET /sessions/me` — return current session info (requires valid token)
 
 ### `api/tables.py`
-- `POST /tables` — create a new table with `TableRules`, returns `table_id`
-- `GET /tables` — list open tables
-- `GET /tables/{table_id}` — get table metadata and current state
-- `POST /tables/{table_id}/join` — join a table with a `session_id`
-- `POST /tables/{table_id}/rebuy` — submit a rebuy request (processed between hands)
+- `POST /tables` — create a new table with `TableRules`; creator becomes admin
+- `GET /tables` — list open tables (no auth required)
+- `GET /tables/{table_id}` — get table metadata (no auth required)
+- `POST /tables/{table_id}/join` — join a table; requires valid token
+- `POST /tables/{table_id}/rebuy` — submit a rebuy request; requires token; processed between hands
+
+### Notes
+- All seat and admin actions validate that the token's `session_id` matches the claimed seat
+- Joining a table that is mid-hand puts the player in `sitting_out` status until the next hand
 
 ---
 
-## Section 9 — Persistence
+## Section 10 — Disconnect and Reconnect Handling
+
+**Files:** `backend/websocket/router.py`, `backend/game/engine.py`, `backend/services/table_service.py`
+
+Disconnect behavior must be fully specified — these are core product rules, not edge cases.
+
+### Disconnect During Your Turn
+- Player is marked `disconnected` immediately
+- A **30-second grace timer** starts (stored as `disconnect_at` on the `Player`)
+- If the player reconnects within 30 seconds: timer is cleared, their turn resumes normally
+- If the timer expires:
+  - If **check is a legal action**: auto-check (preserves stack, avoids forced fold)
+  - Otherwise: auto-fold
+- The auto-action is emitted as a normal event with `session_id` of the player and a `"auto"` flag
+
+### Disconnect When Not Your Turn
+- Player is marked `disconnected`; game continues unaffected
+- Grace window still applies — if they reconnect before their next turn, they play normally
+- If they do not reconnect before it is their turn again, the 30-second timer starts at that point
+
+### Blind Posting After Reconnect
+- If a player missed posting a blind while disconnected, they post it automatically on reconnect before being dealt in
+- Alternatively they can choose to sit out for the hand
+
+### Admin Disconnect
+- Admin rights transfer **immediately** on disconnect (not after the grace window)
+- Transfer goes to the next player in `player_join_order` who is currently connected
+- If the admin reconnects, they do **not** automatically get admin rights back — the new admin retains them unless they voluntarily transfer
+
+### All Players Disconnected
+- Game is paused (no auto-actions, timers frozen) while zero players are connected
+- If no players reconnect within **10 minutes**, the table is marked `abandoned`:
+  - State is preserved in Redis for another 24h for potential debugging
+  - Hand history up to that point is flushed to Postgres
+  - Table no longer appears in the lobby
+
+### Table Abandonment Cleanup
+- Background task (scheduled via `asyncio` on startup) polls for tables with `abandoned` status older than 24h and deletes their Redis keys
+
+---
+
+## Section 11 — Persistence
 
 **Files:** `backend/models/db.py`, `backend/models/schemas.py`, `backend/services/table_service.py`, `backend/services/session_service.py`
 
-Two-tier persistence: Redis for active game state, PostgreSQL for durable history.
+Two-tier persistence: Redis for active game state + event log, PostgreSQL for durable history.
 
-### Redis (active state)
-- Key: `table:{table_id}` → serialized `Table` JSON
-- Key: `session:{session_id}` → serialized `Player` JSON
-- Pub/Sub channel: `table_events:{table_id}`
-- TTL: tables expire after 24h of inactivity
+### Redis Structure (per table)
+
+| Key | Type | Purpose |
+|---|---|---|
+| `table:{id}:state` | String (JSON) | Authoritative snapshot, updated on every mutation |
+| `table:{id}:log` | List | Append-only event log; used for reconnect replay |
+| `table:{id}:lock` | String | Distributed lock token (TTL 5s) |
+| `session:{id}` | String (JSON) | Player session data |
+| `table_events:{id}` | Pub/Sub | Live broadcast channel |
+
+- Table state TTL: 24h of inactivity (reset on each write)
+- Log retention: last 1000 events per table (trim with `LTRIM` on each append)
 
 ### PostgreSQL Schema (`models/db.py`)
+
 ```
-sessions       — session_id, name, created_at
+sessions       — session_id, name, jwt_jti (for revocation), created_at
 tables         — table_id, rules_json, created_at, status
 hands          — hand_id, table_id, hand_number, rules_snapshot_json, started_at, ended_at
-actions        — action_id, hand_id, session_id, street, action_type, amount, timestamp
-hand_results   — hand_id, session_id, hole_cards, best_hand, amount_won
+actions        — action_id, hand_id, session_id, street, action_type, amount, seq, timestamp
+hand_results   — hand_id, session_id, hole_cards_json, best_hand, board, amount_won
 ```
 
 ### `services/table_service.py`
 - `create_table(rules) -> Table`
-- `get_table(table_id) -> Table`
-- `save_table(table)` — writes to Redis
-- `persist_hand(hand_id, actions, results)` — writes to Postgres
+- `get_table(table_id) -> Table` — reads from Redis
+- `save_table(table)` — writes snapshot to `table:{id}:state`
+- `append_event(table_id, event)` — appends to `table:{id}:log`, trims to 1000
+- `persist_hand(hand_id, actions, results)` — writes to Postgres after hand ends
+- `acquire_lock(table_id) -> context manager` — distributed lock acquire/release
 
 ### `services/session_service.py`
-- `create_session(name) -> Player`
+- `create_session(name) -> (Player, token)`
 - `get_session(session_id) -> Player`
+- `validate_token(token) -> session_id` — raises on invalid/expired
 
 ### Notes
-- On server restart, active tables are rehydrated from Redis
+- On server restart, active tables are rehydrated from `table:{id}:state` in Redis
 - Hand history in Postgres survives Redis expiry
-- Rules snapshot is stored per-hand so history reflects the rules in effect at the time
+- Rules snapshot stored per-hand so history reflects rules in effect at time of play
+- `jwt_jti` allows individual token revocation (e.g. on kick) by storing revoked JTIs in Redis with TTL matching token expiry
 
 ---
 
-## Section 10 — App Entry Point and Config
+## Section 12 — App Entry Point and Config
 
 **Files:** `backend/main.py`, `backend/config.py`, `backend/dependencies.py`
 
 ### `config.py`
 - Reads from environment variables
-- `REDIS_URL`, `DATABASE_URL`, `SECRET_KEY`, `CORS_ORIGINS`
+- `REDIS_URL`, `DATABASE_URL`, `SECRET_KEY`, `CORS_ORIGINS`, `JWT_EXPIRY_SECONDS`
 
 ### `dependencies.py`
 - FastAPI dependency: `get_redis() -> Redis`
 - FastAPI dependency: `get_db() -> AsyncSession`
+- FastAPI dependency: `get_current_session(token) -> Player` — validates JWT, returns player
 
 ### `main.py`
 - Creates FastAPI app
 - Registers routers: `api/tables`, `api/sessions`, `websocket/router`
-- Startup event: connect Redis, run DB migrations
+- Startup event: connect Redis, run DB migrations, start abandonment cleanup background task
 - CORS config for local dev and production domains
 
 ---
 
-## Section 11 — Frontend (TODO)
+## Section 13 — Frontend (TODO)
 
 **Folder:** `frontend/`
 
@@ -494,10 +688,17 @@ Separate Vite + React app. Communicates with the backend via:
 - `/` — lobby: list open tables, create table, enter name
 - `/table/:id` — game table: board, player seats, action buttons, vote UI
 
+### Client-side event handling
+- Maintain local `seq` counter
+- On each received event: if `event.seq != local_seq + 1`, send `replay_request`
+- Apply `state_patch` from incremental events onto local state
+- On reconnect: receive full snapshot, reset local state, check for seq gap
+
 ### Notes
 - Runs on its own dev server (e.g. `localhost:5173`) during local development
 - In production, served as a static build via CloudFront or similar
 - All monetary display formatting ($ vs chips) handled client-side based on `denomination` from table rules
+- JWT stored in memory (not localStorage) to reduce XSS risk; refresh on tab focus if near expiry
 
 ---
 
@@ -511,13 +712,15 @@ Each section can be built and tested independently in this order:
 | 2 | Hand Evaluation | Unit tests with known hands |
 | 3 | Game Rules + Variants | Unit tests |
 | 4 | Player + Table State | Serialization tests |
-| 5 | Betting Logic | Unit tests |
+| 5 | Betting Logic | Unit tests — see required test cases in Section 5 |
 | 6 | Game Engine | Integration tests (full hand sim) |
-| 7 | WebSocket Layer | Local WS client |
-| 8 | REST API | curl / Postman |
-| 9 | Persistence | Local Redis + Postgres |
-| 10 | App Entry Point | `uvicorn main:app` |
-| 11 | Frontend | Vite dev server |
+| 7 | Concurrency + State Integrity | Integration tests with concurrent actions |
+| 8 | WebSocket Layer | Local WS client with JWT |
+| 9 | REST API + Auth | curl / Postman |
+| 10 | Disconnect Handling | Simulated disconnect tests |
+| 11 | Persistence | Local Redis + Postgres |
+| 12 | App Entry Point | `uvicorn main:app` |
+| 13 | Frontend | Vite dev server |
 
 ---
 
@@ -526,13 +729,13 @@ Each section can be built and tested independently in this order:
 - Python 3.11+
 - Redis running locally (`redis-server`)
 - PostgreSQL running locally
-- `pip install fastapi uvicorn redis asyncpg sqlalchemy pydantic`
+- `pip install fastapi uvicorn redis asyncpg sqlalchemy pydantic python-jose`
 - `uvicorn backend.main:app --reload`
 
 ## Production (AWS)
 
-- ECS Fargate — stateless FastAPI containers (scale horizontally)
-- ElastiCache — Redis (shared state across containers)
+- ECS Fargate — stateless FastAPI containers (scale horizontally; shared state in Redis means any container handles any request)
+- ElastiCache — Redis (shared state, event log, pub/sub, distributed locks across all containers)
 - RDS — PostgreSQL
-- ALB — Application Load Balancer with WebSocket support enabled
+- ALB — Application Load Balancer with WebSocket support (`idle_timeout` set high, e.g. 3600s)
 - CloudFront — serve frontend static build
