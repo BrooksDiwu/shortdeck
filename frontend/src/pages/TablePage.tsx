@@ -162,11 +162,15 @@ export default function TablePage() {
 
       {/* Main table area */}
       <main
-        className="flex-1 pt-14 relative"
-        style={{ paddingBottom: actionBarMode === 'bottom' && localPlayer ? 80 : 0 }}
+        className="flex-1 relative flex items-center justify-center"
+        style={{
+          paddingTop: 56,
+          paddingBottom: actionBarMode === 'bottom' && localPlayer ? 80 : 0,
+          height: '100dvh',
+        }}
       >
         {table ? (
-          <div className="w-full h-full" style={{ minHeight: 'calc(100vh - 56px)' }}>
+          <div className="w-full h-full">
             <OvalTable
               table={table}
               localPlayerId={localPlayerId}

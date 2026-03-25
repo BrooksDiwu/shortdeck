@@ -184,7 +184,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const eventMsg = msg as { type: 'event'; seq: number; [key: string]: unknown }
         if (eventMsg.seq !== localSeq + 1) {
           // Gap detected — request replay
-          sendMessage({ type: 'request_replay', from_seq: localSeq + 1 })
+          sendMessage({ type: 'replay_request', from_seq: localSeq + 1 })
           return
         }
         get().applyPatch(eventMsg)

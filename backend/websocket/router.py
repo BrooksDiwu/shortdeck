@@ -22,6 +22,7 @@ router = APIRouter()
 # Grace period in seconds before auto-action on disconnect
 DISCONNECT_GRACE_SECONDS = 30
 
+test = ""
 # Active grace timers keyed by (table_id, session_id)
 _grace_timers: dict[tuple[str, str], asyncio.Task] = {}
 
@@ -201,7 +202,6 @@ async def websocket_endpoint(
                     table.spectators.append(session_id)
                     changed = True
         if changed:
-            table.action_seq += 1
             await table_service.save_table(table)
 
     # 4. Send full state snapshot
@@ -315,16 +315,11 @@ async def _subscribe_redis_events(
                 data = message["data"]
                 if isinstance(data, bytes):
                     data = data.decode()
-                try:
-                    event = json.loads(data)
-                    # Don't re-send to originator if it's their own action event
-                    # (they already get the response inline)
-                    if manager.is_connected(table_id, session_id):
-                        # Skip events this client originated to avoid duplicates
-                        if event.get("session_id") != session_id or event.get("type") != "event":
-                            await websocket.send_text(json.dumps(event))
-                except Exception:
-                    pass
+                if manager.is_connected(table_id, session_id):
+                    try:
+                        await websocket.send_text(data)
+                    except Exception:
+                        pass
     except asyncio.CancelledError:
         pass
     except Exception as exc:
@@ -1120,8 +1115,7 @@ async def _handle_approve_sit_down(
             player_dict["hole_cards"] = []
 
             broadcast_msg = _build_event_message(
-                table, "sit_down_approved", session_id,
-                session_id=target_id,
+                table, "sit_down_approved", target_id,
                 seat=seat,
                 chips=chips,
                 players={target_id: player_dict},

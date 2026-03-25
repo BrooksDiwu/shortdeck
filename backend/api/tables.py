@@ -112,7 +112,6 @@ async def join_table(
             # Add as spectator only
             if len(table.spectators) < 200:
                 table.spectators.append(player.session_id)
-                table.action_seq += 1
                 await table_service.save_table(table)
 
     except HTTPException:

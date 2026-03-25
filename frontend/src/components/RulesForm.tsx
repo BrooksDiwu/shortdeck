@@ -18,6 +18,15 @@ const DEFAULT_RULES: TableRulesSchema = {
   timer_seconds: 30,
 }
 
+function InputRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-zinc-400 text-xs font-medium">{label}</label>
+      {children}
+    </div>
+  )
+}
+
 interface RulesFormProps {
   defaultRules?: Partial<TableRulesSchema>
   onSubmit: (rules: TableRulesSchema) => void
@@ -52,19 +61,6 @@ export default function RulesForm({
     const [variant, betting] = v.split(':') as [TableRulesSchema['variant'], TableRulesSchema['betting']]
     setRules((r) => ({ ...r, variant, betting }))
   }
-
-  const InputRow = ({
-    label,
-    children,
-  }: {
-    label: string
-    children: React.ReactNode
-  }) => (
-    <div className="flex flex-col gap-1">
-      <label className="text-zinc-400 text-xs font-medium">{label}</label>
-      {children}
-    </div>
-  )
 
   const inputClass =
     'bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500 w-full'

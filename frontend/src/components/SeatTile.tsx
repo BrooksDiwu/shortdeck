@@ -24,6 +24,8 @@ interface SeatTileProps {
   onRevealCard?: (index: 0 | 1) => void
   onContextMenu?: (e: React.MouseEvent) => void
   isPendingApproval?: boolean
+  /** Compact mode: smaller tile for portrait mobile non-local seats */
+  compact?: boolean
 }
 
 export default function SeatTile({
@@ -44,7 +46,16 @@ export default function SeatTile({
   onRevealCard,
   onContextMenu,
   isPendingApproval,
+  compact = false,
 }: SeatTileProps) {
+  // Derive size tokens from compact flag so callers don't need to thread dozens of props.
+  const tileW = compact ? 'w-[60px]' : 'w-20'
+  const tileMinH = compact ? 'min-h-[52px]' : 'min-h-[64px]'
+  const tilePad = compact ? 'p-1' : 'p-2'
+  const nameSize = compact ? 'text-[8px]' : 'text-[10px]'
+  const stackSize = compact ? 'text-[9px]' : 'text-[11px]'
+  const betTextSize = compact ? 'text-[8px]' : 'text-[10px]'
+
   const [revealConfirm, setRevealConfirm] = useState<0 | 1 | null>(null)
   const timerProgress = timerRemaining !== undefined ? timerRemaining / timerSeconds : 1
   const circumference = 2 * Math.PI * 28
@@ -69,6 +80,40 @@ export default function SeatTile({
   const renderHoleCards = () => {
     if (!player) return null
 
+    // In compact mode for non-local seats: show a minimal 2-card indicator
+    // to avoid tall card stacks that cause overflow on small screens.
+    if (compact && !isLocal) {
+      const hasCards = player.hole_cards.length > 0
+      if (!hasCards) return null
+      const isRevealed = player.is_revealed ?? [false, false]
+      const anyRevealed = isRevealed.some(Boolean)
+      if (!anyRevealed) {
+        // Just show two tiny face-down stubs
+        return (
+          <div className="flex gap-0.5 mt-0.5">
+            {[0, 1].map((i) => (
+              <div key={i} className="w-4 h-6 rounded bg-blue-900 border border-blue-700 opacity-60" />
+            ))}
+          </div>
+        )
+      }
+      // If revealed, render actual sm cards — worth the height
+      return (
+        <div className="flex gap-0.5 mt-0.5">
+          {player.hole_cards.map((card, i) => (
+            <FlipCard
+              key={i}
+              card={card}
+              faceUp={isRevealed[i]}
+              size="sm"
+              highlighted={highlightedCardIndices.includes(i)}
+            />
+          ))}
+        </div>
+      )
+    }
+
+    // Full card rendering for local player or non-compact mode
     // Empty state
     if (player.hole_cards.length === 0 && !(isLocal && holeCards && holeCards.length > 0)) {
       return (
@@ -136,14 +181,14 @@ export default function SeatTile({
         className="relative"
       >
         {isPendingApproval ? (
-          <div className="w-20 min-h-[64px] rounded-xl border-2 border-yellow-500/50 bg-zinc-900/80 flex flex-col items-center justify-center p-2 gap-1">
+          <div className={`${tileW} ${tileMinH} rounded-xl border-2 border-yellow-500/50 bg-zinc-900/80 flex flex-col items-center justify-center ${tilePad} gap-1`}>
             <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
             <span className="text-yellow-400 text-[9px] font-medium">PENDING</span>
           </div>
         ) : (
           <button
             onClick={onSitDown}
-            className="w-20 min-h-[64px] rounded-xl border-2 border-dashed border-zinc-600 hover:border-green-500 bg-zinc-900/60 hover:bg-zinc-800/60 flex flex-col items-center justify-center p-2 gap-1 transition-all group"
+            className={`${tileW} ${tileMinH} rounded-xl border-2 border-dashed border-zinc-600 hover:border-green-500 bg-zinc-900/60 hover:bg-zinc-800/60 flex flex-col items-center justify-center ${tilePad} gap-1 transition-all group`}
             aria-label={`Sit in seat ${seat}`}
           >
             <span className="text-zinc-500 group-hover:text-green-400 text-xs font-semibold transition-colors">SIT</span>
@@ -161,7 +206,7 @@ export default function SeatTile({
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.8 }}
         className={`
-          relative w-20 rounded-xl border-2 p-2 flex flex-col items-center gap-0.5
+          relative ${tileW} rounded-xl border-2 ${tilePad} flex flex-col items-center gap-0.5
           ${isActing ? 'thinking-pulse border-yellow-400 bg-zinc-800' : 'border-zinc-700 bg-zinc-900/80'}
           ${isWinner ? 'win-glow border-yellow-400' : ''}
           ${player.status === 'folded' ? 'opacity-50' : ''}
@@ -205,13 +250,13 @@ export default function SeatTile({
         )}
 
         {/* Name */}
-        <span className="text-white text-[10px] font-semibold w-full text-center truncate leading-none">
+        <span className={`text-white ${nameSize} font-semibold w-full text-center truncate leading-none`}>
           {player.name}
           {isLocal && ' ✦'}
         </span>
 
         {/* Stack */}
-        <span className="text-green-400 text-[11px] font-mono leading-none">
+        <span className={`text-green-400 ${stackSize} font-mono leading-none`}>
           {formatAmount(player.stack, denomination)}
         </span>
 
@@ -222,7 +267,7 @@ export default function SeatTile({
         {player.current_bet > 0 && (
           <div className="mt-1 flex items-center gap-1">
             <ChipStack amount={player.current_bet} size="sm" />
-            <span className="text-yellow-300 text-[10px] font-mono">
+            <span className={`text-yellow-300 ${betTextSize} font-mono`}>
               {formatAmount(player.current_bet, denomination)}
             </span>
           </div>
