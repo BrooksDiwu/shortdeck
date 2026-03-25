@@ -43,6 +43,8 @@ async def create_table(
         street_modifiers=body.rules.street_modifiers,
         max_players=body.rules.max_players,
         allow_rebuy=body.rules.allow_rebuy,
+        timer_enabled=body.rules.timer_enabled,
+        timer_seconds=body.rules.timer_seconds,
     )
     cap = rules.compute_max_players()
     if rules.max_players > cap:
@@ -93,50 +95,32 @@ async def join_table(
     table_id: str,
     player=Depends(_require_session),
 ) -> dict:
-    """Join a table. Mid-hand joins get sitting_out status."""
+    """Join a table as a spectator. Actual seating goes through sit_down_request -> approve_sit_down."""
     table_service = TableService()
     try:
         async with table_service.acquire_lock(table_id):
             table = await table_service.get_table(table_id)
 
+            # Already seated — nothing to do
             if player.session_id in table.players:
                 return {"message": "Already at this table"}
 
-            if len(table.players) >= table.rules.max_players:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Table is full",
-                )
+            # Already a spectator — nothing to do
+            if player.session_id in table.spectators:
+                return {"message": "Already at this table"}
 
-            # Find next available seat
-            taken_seats = {p.seat for p in table.players.values()}
-            seat = next(s for s in range(table.rules.max_players) if s not in taken_seats)
-
-            from ..game.player import Player
-            from datetime import datetime
-
-            new_player = Player(
-                session_id=player.session_id,
-                name=player.name,
-                stack=table.rules.big_blind * 100,  # default buy-in: 100 BB
-                hole_cards=[],
-                seat=seat,
-                status="sitting_out" if table.phase not in ("waiting", "between_hands") else "active",
-                is_admin=False,
-                joined_at=datetime.utcnow(),
-            )
-
-            table.players[player.session_id] = new_player
-            table.player_join_order.append(player.session_id)
-            table.action_seq += 1
-            await table_service.save_table(table)
+            # Add as spectator only
+            if len(table.spectators) < 200:
+                table.spectators.append(player.session_id)
+                table.action_seq += 1
+                await table_service.save_table(table)
 
     except HTTPException:
         raise
     except KeyError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Table not found")
 
-    return {"message": "Joined table", "seat": seat}
+    return {"message": "Joined table"}
 @router.post("/{table_id}/rebuy", status_code=status.HTTP_200_OK)
 async def rebuy(
     table_id: str,
@@ -198,4 +182,6 @@ def _rules_to_schema(rules: TableRules):
         street_modifiers=rules.street_modifiers,
         max_players=rules.max_players,
         allow_rebuy=rules.allow_rebuy,
+        timer_enabled=rules.timer_enabled,
+        timer_seconds=rules.timer_seconds,
     )

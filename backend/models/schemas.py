@@ -21,6 +21,8 @@ class TableRulesSchema(BaseModel):
     street_modifiers: dict[str, int] = Field(default_factory=dict)
     max_players: int = Field(default=9, ge=2)
     allow_rebuy: bool = True
+    timer_enabled: bool = False
+    timer_seconds: int = Field(default=30, ge=1)
 
     @model_validator(mode="after")
     def _validate_max_players(self) -> "TableRulesSchema":

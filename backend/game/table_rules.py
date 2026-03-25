@@ -28,6 +28,8 @@ class TableRules:
     street_modifiers: dict[str, int] = field(default_factory=dict)
     max_players: int = 9
     allow_rebuy: bool = True
+    timer_enabled: bool = False
+    timer_seconds: int = 30
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +45,8 @@ class TableRules:
             "street_modifiers": self.street_modifiers,
             "max_players": self.max_players,
             "allow_rebuy": self.allow_rebuy,
+            "timer_enabled": self.timer_enabled,
+            "timer_seconds": self.timer_seconds,
         }
 
     def compute_max_players(self) -> int:
@@ -67,4 +71,6 @@ class TableRules:
             street_modifiers=data.get("street_modifiers", {}),
             max_players=data.get("max_players", 9),
             allow_rebuy=data.get("allow_rebuy", True),
+            timer_enabled=data.get("timer_enabled", False),
+            timer_seconds=data.get("timer_seconds", 30),
         )

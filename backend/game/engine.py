@@ -37,6 +37,7 @@ class GameEngine:
         for p in active_players:
             p.status = "active"
             p.hole_cards = []
+            p.is_revealed = []
             p.current_bet = 0
             p.total_in = 0
 
@@ -44,6 +45,7 @@ class GameEngine:
         hole_count = self.rules.hole_cards_count + (1 if self.rules.extra_hole_card else 0)
         for p in active_players:
             p.hole_cards = table.deck.deal(hole_count)
+            p.is_revealed = [False] * len(p.hole_cards)
 
         # Post blinds
         BettingEngine.post_blinds(table)
@@ -194,6 +196,7 @@ class GameEngine:
             p.current_bet = 0
             p.total_in = 0
             p.hole_cards = []
+            p.is_revealed = []
 
         table.pot = 0
         table.side_pots = []

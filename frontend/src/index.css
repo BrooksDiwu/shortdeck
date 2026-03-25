@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+@theme {
+  --color-felt-green: #1a4731;
+  --color-felt-green-light: #1e5c3a;
+  --color-table-rim: #3d1f0a;
+  --color-chip-white: #f9fafb;
+  --color-chip-red: #ef4444;
+  --color-chip-green: #22c55e;
+  --color-chip-black: #1f2937;
+  --color-chip-purple: #a855f7;
+  --color-chip-yellow: #eab308;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #09090b;
+  color: #f9fafb;
+  overflow-x: hidden;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #18181b;
+}
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 3px;
+}
+
+/* Poker table felt texture */
+.felt-texture {
+  background-color: #1a4731;
+  background-image:
+    radial-gradient(ellipse at center, #1e5c3a 0%, #1a4731 60%, #163d29 100%);
+}
+
+/* Card styles */
+.card-back {
+  background: linear-gradient(135deg, #1e40af 0%, #1d4ed8 50%, #1e40af 100%);
+  border: 2px solid #3b82f6;
+}
+
+/* Thinking pulse */
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(251, 191, 36, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+.thinking-pulse {
+  animation: pulse-ring 1.5s ease-in-out infinite;
+}
+
+/* Win glow */
+@keyframes win-glow {
+  0%, 100% { box-shadow: 0 0 10px 2px rgba(251, 191, 36, 0.5); }
+  50% { box-shadow: 0 0 20px 6px rgba(251, 191, 36, 0.9); }
+}
+
+.win-glow {
+  animation: win-glow 1s ease-in-out infinite;
+}
+
+/* Timer arc SVG */
+.timer-arc {
+  transition: stroke-dashoffset 1s linear;
+}
+
+/* Ghost card (rabbit hunt) */
+.ghost-card {
+  opacity: 0.45;
+  filter: saturate(0.3) brightness(1.2);
+}
+
+/* Chip stack */
+.chip-stack-container {
+  position: relative;
+}
+
+/* No select on game elements */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}

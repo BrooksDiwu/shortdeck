@@ -676,29 +676,79 @@ hand_results   — hand_id, session_id, hole_cards_json, best_hand, board, amoun
 
 ---
 
-## Section 13 — Frontend (TODO)
+## Section 13 — Frontend
+
+> **Full frontend plan:** See [FRONTEND_README.md](FRONTEND_README.md) for the complete frontend design, component breakdown, animation strategy, and build order.
 
 **Folder:** `frontend/`
+**Stack:** React + Vite, Zustand, Tailwind CSS v4, Framer Motion + GSAP, React Router v6
 
 Separate Vite + React app. Communicates with the backend via:
 - REST (session creation, table creation/listing/joining)
 - WebSocket (all in-game real-time events)
 
-### Planned pages
-- `/` — lobby: list open tables, create table, enter name
-- `/table/:id` — game table: board, player seats, action buttons, vote UI
+### Pages
+- `/` — lobby: list open tables (sorted by player count), create table with full `TableRules` form, name entry
+- `/table/:id` — game table: oval felt layout, seats around perimeter, community cards + pot in center, action controls, vote/pause banner
 
 ### Client-side event handling
-- Maintain local `seq` counter
+- Maintain local `seq` counter (Zustand)
 - On each received event: if `event.seq != local_seq + 1`, send `replay_request`
 - Apply `state_patch` from incremental events onto local state
 - On reconnect: receive full snapshot, reset local state, check for seq gap
 
 ### Notes
-- Runs on its own dev server (e.g. `localhost:5173`) during local development
-- In production, served as a static build via CloudFront or similar
-- All monetary display formatting ($ vs chips) handled client-side based on `denomination` from table rules
-- JWT stored in memory (not localStorage) to reduce XSS risk; refresh on tab focus if near expiry
+- Mobile-first design — oval table scales for desktop
+- JWT stored in memory only (never localStorage); refreshed on tab focus if near expiry
+- All monetary display formatting ($ vs chips) handled client-side based on `denomination`
+- Card assets are `.svg` files in `frontend/src/assets/cards/` — fully replaceable
+- **Framer Motion** handles card/UI animations; **GSAP** handles chip movement and pot-to-winner animations
+
+---
+
+## Section 14 — Backend Changes Required for Frontend
+
+The following backend additions are needed to support the frontend design. See [FRONTEND_README.md § 13.13](FRONTEND_README.md#section-1313--new-backend-requirements) for full payload specs.
+
+### New `TableRules` Fields
+- `timer_enabled: bool` — per-turn timer on/off (set at table creation)
+- `timer_seconds: int` — timer duration in seconds
+
+### New `Table` State Fields
+- `spectators: list[str]` — session_ids of connected non-seated players
+- `pending_sit_requests: list[{ session_id, seat, chips }]` — awaiting host approval
+- `is_paused: bool` — game is paused before next hand
+- `pause_requested_by: str | None` — session_id of player who requested pause
+
+### New `Player` State Fields
+- `is_revealed: list[bool]` — per hole card reveal status, e.g. `[False, False]`
+
+### New WebSocket Messages (client → server)
+- `propose_rule_change` — any player proposes a rule change (triggers auto-pause)
+- `force_rule_change` — admin only; applies rule change without vote
+- `pause_request` / `unpause_request` — any player pauses/unpauses before next hand
+- `reveal_card { card_index }` — player reveals one hole card to all
+- `rabbit_hunt_request` — winner requests remaining community cards dealt as ghost cards
+- `sit_down_request { seat, chips }` — player requests a seat with starting stack
+- `approve_sit_down / reject_sit_down { session_id }` — host responds to sit request
+- `stand_up` — player vacates their seat (between hands only)
+- `host_stand_up / host_remove_player { session_id }` — host manages seated players
+
+### New WebSocket Messages (server → client)
+- `sit_down_request` broadcast to host, `sit_down_approved / sit_down_rejected` to player
+- `player_stood_up`, `player_removed` — seat state updates
+- `card_revealed { session_id, card_index, card }` — broadcast hole card reveal
+- `rabbit_hunt { cards }` — ghost community cards (winner only)
+- `game_paused`, `game_unpaused` — pause state changes
+- `vote_update { votes_for, votes_against, total_eligible }` — live vote tally
+- `vote_resolved { passed, new_rules? }` — vote outcome
+
+### Vote & Pause Logic Changes
+- Any player (not just admin) can propose a rule change or request pause
+- Admin retains ability to force a rule change without a vote
+- Vote ends automatically when simple majority is reached (no need to wait for all votes)
+- Ties = vote fails (unchanged from current spec)
+- Game unpauses automatically on vote resolution: new rules if passed, current rules if failed
 
 ---
 

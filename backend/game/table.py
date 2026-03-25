@@ -67,6 +67,10 @@ class Table:
     hand_number: int = 0
     action_seq: int = 0
     pending_vote: ModeVote | None = None
+    spectators: list[str] = field(default_factory=list)
+    pending_sit_requests: list[dict] = field(default_factory=list)
+    is_paused: bool = False
+    pause_requested_by: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -85,6 +89,10 @@ class Table:
             "hand_number": self.hand_number,
             "action_seq": self.action_seq,
             "pending_vote": self.pending_vote.to_dict() if self.pending_vote else None,
+            "spectators": self.spectators,
+            "pending_sit_requests": self.pending_sit_requests,
+            "is_paused": self.is_paused,
+            "pause_requested_by": self.pause_requested_by,
         }
 
     @classmethod
@@ -105,4 +113,8 @@ class Table:
             hand_number=data.get("hand_number", 0),
             action_seq=data.get("action_seq", 0),
             pending_vote=ModeVote.from_dict(data["pending_vote"]) if data.get("pending_vote") else None,
+            spectators=data.get("spectators", []),
+            pending_sit_requests=data.get("pending_sit_requests", []),
+            is_paused=data.get("is_paused", False),
+            pause_requested_by=data.get("pause_requested_by", None),
         )

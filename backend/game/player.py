@@ -16,6 +16,7 @@ class Player:
     is_admin: bool = False
     joined_at: datetime = field(default_factory=datetime.utcnow)
     disconnect_at: datetime | None = None
+    is_revealed: list[bool] = field(default_factory=lambda: [False, False])
 
     def to_dict(self) -> dict:
         return {
@@ -30,6 +31,7 @@ class Player:
             "is_admin": self.is_admin,
             "joined_at": self.joined_at.isoformat(),
             "disconnect_at": self.disconnect_at.isoformat() if self.disconnect_at else None,
+            "is_revealed": self.is_revealed,
         }
 
     @classmethod
@@ -47,4 +49,5 @@ class Player:
             is_admin=data.get("is_admin", False),
             joined_at=datetime.fromisoformat(data["joined_at"]) if "joined_at" in data else datetime.utcnow(),
             disconnect_at=datetime.fromisoformat(data["disconnect_at"]) if data.get("disconnect_at") else None,
+            is_revealed=data.get("is_revealed", [False, False]),
         )
