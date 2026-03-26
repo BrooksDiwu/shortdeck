@@ -134,7 +134,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       if (msg.type === 'sit_down_request') {
+        console.log('[sit_down_request] received:', msg)
         const m = msg as unknown as { pending_sit_requests: Table['pending_sit_requests'] }
+        console.log('[sit_down_request] pending_sit_requests:', m.pending_sit_requests)
         set((state) => state.table ? { table: { ...state.table, pending_sit_requests: m.pending_sit_requests } } : {})
         return
       }

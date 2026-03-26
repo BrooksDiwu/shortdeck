@@ -1024,6 +1024,12 @@ async def _handle_sit_down_request(
 
             await table_service.save_table(table)
 
+            print(f"[SIT_DOWN_REQUEST] requester={session_id} name={requester_name} seat={seat} chips={chips}")
+            print(f"[SIT_DOWN_REQUEST] table.admin_id={table.admin_id}")
+            print(f"[SIT_DOWN_REQUEST] admin connected={manager.is_connected(table_id, table.admin_id)}")
+            print(f"[SIT_DOWN_REQUEST] all connected sessions={manager.get_connected_sessions(table_id)}")
+            print(f"[SIT_DOWN_REQUEST] pending_sit_requests now={table.pending_sit_requests}")
+
             broadcast_msg = _build_event_message(
                 table, "sit_down_request", session_id,
                 seat=seat,
@@ -1040,6 +1046,7 @@ async def _handle_sit_down_request(
                 "name": requester_name,
                 "pending_sit_requests": table.pending_sit_requests,
             })
+            print(f"[SIT_DOWN_REQUEST] personal message sent to admin {table.admin_id}")
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {

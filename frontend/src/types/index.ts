@@ -98,7 +98,7 @@ export type ClientMessage =
   | { type: 'stand_up' }
   | { type: 'host_stand_up'; session_id: string }
   | { type: 'host_remove_player'; session_id: string }
-  | { type: 'request_replay'; from_seq: number }
+  | { type: 'replay_request'; from_seq: number }
 
 // WebSocket message types (server → client)
 export type ServerMessage =

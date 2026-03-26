@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import type { Player, Card } from '@/types'
 import { AnimatedCard, FlipCard } from './CardFace'
-import ChipStack from './ChipStack'
 import { formatAmount } from '@/utils/gameUtils'
 import Modal from './Modal'
 
@@ -16,7 +15,7 @@ interface SeatTileProps {
   timerSeconds: number
   timerRemaining?: number
   denomination: 'chips' | 'usd'
-  holeCards?: Card[] // local player's revealed hole cards
+  holeCards?: Card[]
   isWinner?: boolean
   handLabel?: string
   highlightedCardIndices?: number[]
@@ -24,8 +23,11 @@ interface SeatTileProps {
   onRevealCard?: (index: 0 | 1) => void
   onContextMenu?: (e: React.MouseEvent) => void
   isPendingApproval?: boolean
-  /** Compact mode: smaller tile for portrait mobile non-local seats */
   compact?: boolean
+}
+
+function getInitials(name: string): string {
+  return name.trim().slice(0, 2).toUpperCase()
 }
 
 export default function SeatTile({
@@ -48,156 +50,56 @@ export default function SeatTile({
   isPendingApproval,
   compact = false,
 }: SeatTileProps) {
-  // Derive size tokens from compact flag so callers don't need to thread dozens of props.
-  const tileW = compact ? 'w-[60px]' : 'w-20'
-  const tileMinH = compact ? 'min-h-[52px]' : 'min-h-[64px]'
-  const tilePad = compact ? 'p-1' : 'p-2'
-  const nameSize = compact ? 'text-[8px]' : 'text-[10px]'
-  const stackSize = compact ? 'text-[9px]' : 'text-[11px]'
-  const betTextSize = compact ? 'text-[8px]' : 'text-[10px]'
-
   const [revealConfirm, setRevealConfirm] = useState<0 | 1 | null>(null)
   const timerProgress = timerRemaining !== undefined ? timerRemaining / timerSeconds : 1
-  const circumference = 2 * Math.PI * 28
+  const AVATAR_SIZE = isLocal ? 52 : compact ? 44 : 48
+  const STROKE = 3
+  const R = (AVATAR_SIZE - STROKE * 2) / 2
+  const circumference = 2 * Math.PI * R
 
-  const getStatusBadge = () => {
+  // Status colors/labels
+  const getStatusInfo = () => {
     if (!player) return null
-    if (player.status === 'disconnected') {
-      return <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[9px] px-1 rounded-full">DC</span>
-    }
-    if (player.status === 'sitting_out') {
-      return <span className="absolute -top-1 -right-1 bg-yellow-600 text-white text-[9px] px-1 rounded-full">OUT</span>
-    }
-    if (player.status === 'folded') {
-      return <span className="absolute -top-1 -right-1 bg-zinc-600 text-white text-[9px] px-1 rounded-full">FOLD</span>
-    }
-    if (player.status === 'all_in') {
-      return <span className="absolute -top-1 -right-1 bg-orange-500 text-white text-[9px] px-1 rounded-full">ALL IN</span>
-    }
+    if (player.status === 'disconnected') return { label: 'DC', color: 'bg-red-600' }
+    if (player.status === 'sitting_out') return { label: 'OUT', color: 'bg-yellow-600' }
+    if (player.status === 'folded') return { label: 'FOLD', color: 'bg-zinc-600' }
+    if (player.status === 'all_in') return { label: 'ALL IN', color: 'bg-orange-500' }
     return null
   }
-
-  const renderHoleCards = () => {
-    if (!player) return null
-
-    // In compact mode for non-local seats: show a minimal 2-card indicator
-    // to avoid tall card stacks that cause overflow on small screens.
-    if (compact && !isLocal) {
-      const hasCards = player.hole_cards.length > 0
-      if (!hasCards) return null
-      const isRevealed = player.is_revealed ?? [false, false]
-      const anyRevealed = isRevealed.some(Boolean)
-      if (!anyRevealed) {
-        // Just show two tiny face-down stubs
-        return (
-          <div className="flex gap-0.5 mt-0.5">
-            {[0, 1].map((i) => (
-              <div key={i} className="w-4 h-6 rounded bg-blue-900 border border-blue-700 opacity-60" />
-            ))}
-          </div>
-        )
-      }
-      // If revealed, render actual sm cards — worth the height
-      return (
-        <div className="flex gap-0.5 mt-0.5">
-          {player.hole_cards.map((card, i) => (
-            <FlipCard
-              key={i}
-              card={card}
-              faceUp={isRevealed[i]}
-              size="sm"
-              highlighted={highlightedCardIndices.includes(i)}
-            />
-          ))}
-        </div>
-      )
-    }
-
-    // Full card rendering for local player or non-compact mode
-    // Empty state
-    if (player.hole_cards.length === 0 && !(isLocal && holeCards && holeCards.length > 0)) {
-      return (
-        <div className="flex gap-0.5 mt-1">
-          {[0, 1].map((i) => (
-            <div key={i} className="w-7 h-10 rounded bg-zinc-700 border border-zinc-600 opacity-30" />
-          ))}
-        </div>
-      )
-    }
-
-    const cards = isLocal && holeCards && holeCards.length > 0 ? holeCards : player.hole_cards
-    const isRevealed = player.is_revealed ?? [false, false]
-
-    return (
-      <div className="flex gap-0.5 mt-1">
-        {cards.map((card, i) => {
-          const revealed = isRevealed[i] || isLocal
-          const highlighted = highlightedCardIndices.includes(i)
-
-          if (isLocal) {
-            return (
-              <div key={i} className="relative">
-                <AnimatedCard
-                  card={card}
-                  faceDown={false}
-                  size="sm"
-                  highlighted={highlighted}
-                  delay={i * 0.1}
-                  onClick={!isRevealed[i] ? () => setRevealConfirm(i as 0 | 1) : undefined}
-                  className={!isRevealed[i] ? 'ring-1 ring-blue-400/50 hover:ring-blue-300 transition-shadow' : ''}
-                />
-                {!isRevealed[i] && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <svg className="w-3 h-3 text-blue-300 opacity-70" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                      <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" />
-                    </svg>
-                  </div>
-                )}
-              </div>
-            )
-          }
-
-          return (
-            <FlipCard
-              key={i}
-              card={card}
-              faceUp={revealed}
-              size="sm"
-              highlighted={highlighted}
-            />
-          )
-        })}
-      </div>
-    )
-  }
+  const statusInfo = getStatusInfo()
 
   // Empty seat
   if (!player) {
     return (
-      <motion.div
-        initial={{ opacity: 0, scale: 0.8 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="relative"
-      >
+      <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center gap-1">
         {isPendingApproval ? (
-          <div className={`${tileW} ${tileMinH} rounded-xl border-2 border-yellow-500/50 bg-zinc-900/80 flex flex-col items-center justify-center ${tilePad} gap-1`}>
-            <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
-            <span className="text-yellow-400 text-[9px] font-medium">PENDING</span>
-          </div>
+          <>
+            <div
+              className="rounded-full border-2 border-yellow-500/50 bg-zinc-900/80 flex items-center justify-center"
+              style={{ width: AVATAR_SIZE, height: AVATAR_SIZE }}
+            >
+              <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+            </div>
+            <span className="text-yellow-400 text-[8px] font-medium">PENDING</span>
+          </>
         ) : (
-          <button
-            onClick={onSitDown}
-            className={`${tileW} ${tileMinH} rounded-xl border-2 border-dashed border-zinc-600 hover:border-green-500 bg-zinc-900/60 hover:bg-zinc-800/60 flex flex-col items-center justify-center ${tilePad} gap-1 transition-all group`}
-            aria-label={`Sit in seat ${seat}`}
-          >
-            <span className="text-zinc-500 group-hover:text-green-400 text-xs font-semibold transition-colors">SIT</span>
-            <span className="text-zinc-600 text-[10px]">#{seat}</span>
-          </button>
+          <>
+            <button
+              onClick={onSitDown}
+              className="rounded-full border-2 border-dashed border-zinc-600 hover:border-green-500 bg-zinc-900/60 hover:bg-zinc-800/60 flex items-center justify-center transition-all group"
+              style={{ width: AVATAR_SIZE, height: AVATAR_SIZE }}
+              aria-label={`Sit in seat ${seat}`}
+            >
+              <span className="text-zinc-500 group-hover:text-green-400 text-xs font-semibold transition-colors">SIT</span>
+            </button>
+            <span className="text-zinc-600 text-[9px]">#{seat}</span>
+          </>
         )}
       </motion.div>
     )
   }
+
+  const isFolded = player.status === 'folded'
 
   return (
     <>
@@ -205,71 +107,152 @@ export default function SeatTile({
         initial={{ opacity: 0, scale: 0.8 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.8 }}
-        className={`
-          relative ${tileW} rounded-xl border-2 ${tilePad} flex flex-col items-center gap-0.5
-          ${isActing ? 'thinking-pulse border-yellow-400 bg-zinc-800' : 'border-zinc-700 bg-zinc-900/80'}
-          ${isWinner ? 'win-glow border-yellow-400' : ''}
-          ${player.status === 'folded' ? 'opacity-50' : ''}
-          no-select
-        `}
+        className={`flex flex-col items-center gap-0.5 ${isFolded ? 'opacity-50' : ''}`}
         onContextMenu={onContextMenu}
         id={`seat-${seat}`}
       >
-        {/* Timer arc */}
-        {timerEnabled && isActing && timerRemaining !== undefined && (
-          <svg className="absolute inset-0 w-full h-full" style={{ transform: 'rotate(-90deg)' }}>
-            <rect
-              x="0" y="0" width="100%" height="100%"
-              rx="10" ry="10"
-              fill="none"
-              stroke="#fbbf24"
-              strokeWidth="2"
-              strokeDasharray={circumference}
-              strokeDashoffset={circumference * (1 - timerProgress)}
-              className="timer-arc"
-              opacity="0.7"
-            />
-          </svg>
-        )}
+        {/* Avatar circle with optional timer arc */}
+        <div className="relative" style={{ width: AVATAR_SIZE, height: AVATAR_SIZE }}>
+          {/* Timer arc SVG */}
+          {timerEnabled && isActing && timerRemaining !== undefined && (
+            <svg
+              className="absolute inset-0"
+              width={AVATAR_SIZE}
+              height={AVATAR_SIZE}
+              style={{ transform: 'rotate(-90deg)' }}
+            >
+              <circle
+                cx={AVATAR_SIZE / 2}
+                cy={AVATAR_SIZE / 2}
+                r={R}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth={STROKE}
+                strokeDasharray={circumference}
+                strokeDashoffset={circumference * (1 - timerProgress)}
+                strokeLinecap="round"
+                opacity={0.85}
+              />
+            </svg>
+          )}
 
-        {/* Dealer button */}
-        {isDealer && (
-          <div className="absolute -top-2 -left-2 w-5 h-5 rounded-full bg-white text-black text-[9px] font-bold flex items-center justify-center shadow-lg z-10">
-            D
+          {/* Avatar background */}
+          <div
+            className={`
+              absolute inset-0 rounded-full flex items-center justify-center select-none
+              ${isLocal && isActing ? 'ring-2 ring-yellow-400 ring-offset-2 ring-offset-[#0f2318]' : ''}
+              ${isLocal && isWinner ? 'ring-2 ring-yellow-300 shadow-lg shadow-yellow-400/40' : ''}
+              ${!isLocal && isActing ? 'ring-2 ring-yellow-400 ring-offset-1 ring-offset-transparent' : ''}
+              ${!isLocal && isWinner ? 'ring-2 ring-yellow-300 shadow-lg shadow-yellow-400/40' : ''}
+              ${isLocal ? 'bg-[#2a4a35]' : 'bg-[#1e3828]'}
+            `}
+          >
+            <span
+              className={`font-bold text-white tracking-wide ${
+                isLocal ? 'text-base' : compact ? 'text-xs' : 'text-sm'
+              }`}
+            >
+              {getInitials(player.name)}
+            </span>
           </div>
-        )}
 
-        {/* Status badge */}
-        {getStatusBadge()}
+          {/* Dealer button */}
+          {isDealer && (
+            <div className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-white text-black text-[8px] font-bold flex items-center justify-center shadow-md z-10 border border-zinc-300">
+              D
+            </div>
+          )}
 
-        {/* Admin badge */}
-        {player.is_admin && (
-          <span className="absolute -bottom-1 -left-1 bg-amber-500 text-black text-[8px] px-1 rounded-full font-bold">
-            HOST
-          </span>
-        )}
+          {/* Status badge */}
+          {statusInfo && (
+            <div className={`absolute -top-1 -right-1 ${statusInfo.color} text-white text-[7px] px-1 py-0.5 rounded-full font-bold z-10 leading-none`}>
+              {statusInfo.label}
+            </div>
+          )}
+
+          {/* Admin/HOST badge */}
+          {player.is_admin && (
+            <div className="absolute -bottom-1 -left-1 bg-amber-500 text-black text-[7px] px-1 rounded-full font-bold z-10 leading-none py-0.5">
+              HOST
+            </div>
+          )}
+        </div>
 
         {/* Name */}
-        <span className={`text-white ${nameSize} font-semibold w-full text-center truncate leading-none`}>
-          {player.name}
-          {isLocal && ' ✦'}
+        <span
+          className={`text-white font-medium leading-none text-center truncate max-w-[64px] ${
+            compact ? 'text-[9px]' : isLocal ? 'text-[11px]' : 'text-[10px]'
+          }`}
+        >
+          {player.name}{isLocal ? ' ✦' : ''}
         </span>
 
         {/* Stack */}
-        <span className={`text-green-400 ${stackSize} font-mono leading-none`}>
+        <span className={`text-yellow-400 font-mono leading-none ${compact ? 'text-[9px]' : 'text-[10px]'}`}>
           {formatAmount(player.stack, denomination)}
         </span>
 
-        {/* Hole cards */}
-        {renderHoleCards()}
+        {/* Opponent card back indicators */}
+        {!isLocal && compact && !isFolded && (player.hole_cards.length > 0 || player.status === 'active' || player.status === 'all_in') && (
+          <div className="flex gap-0.5 mt-0.5">
+            {[0, 1].map((i) => (
+              <div
+                key={i}
+                className="w-4 h-6 rounded-sm bg-red-800/70 border border-red-700/50 flex items-center justify-center"
+              >
+                <span className="text-[5px] text-red-300/60 font-bold">?</span>
+              </div>
+            ))}
+          </div>
+        )}
 
-        {/* Current bet */}
-        {player.current_bet > 0 && (
-          <div className="mt-1 flex items-center gap-1">
-            <ChipStack amount={player.current_bet} size="sm" />
-            <span className={`text-yellow-300 ${betTextSize} font-mono`}>
-              {formatAmount(player.current_bet, denomination)}
-            </span>
+        {/* Hole cards — only for local player */}
+        {isLocal && (() => {
+          const cards = holeCards && holeCards.length > 0 ? holeCards : player.hole_cards
+          const isRevealed = player.is_revealed ?? [false, false]
+          if (cards.length === 0) return null
+          return (
+            <div className="flex gap-1 mt-2">
+              {cards.map((card, i) => {
+                const highlighted = highlightedCardIndices.includes(i)
+                return (
+                  <div key={i} className="relative">
+                    <AnimatedCard
+                      card={card}
+                      faceDown={false}
+                      size="lg"
+                      highlighted={highlighted}
+                      delay={i * 0.1}
+                      onClick={!isRevealed[i] ? () => setRevealConfirm(i as 0 | 1) : undefined}
+                      className={!isRevealed[i] ? 'ring-1 ring-blue-400/50 hover:ring-blue-300 transition-shadow' : ''}
+                    />
+                    {!isRevealed[i] && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                        <svg className="w-3 h-3 text-blue-300 opacity-70" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                          <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })()}
+
+        {/* For opponent revealed cards at showdown */}
+        {!isLocal && player.hole_cards.length > 0 && (player.is_revealed ?? [false, false]).some(Boolean) && (
+          <div className="flex gap-0.5 mt-0.5">
+            {player.hole_cards.map((card, i) => (
+              <FlipCard
+                key={i}
+                card={card}
+                faceUp={(player.is_revealed ?? [false, false])[i]}
+                size="sm"
+                highlighted={highlightedCardIndices.includes(i)}
+              />
+            ))}
           </div>
         )}
 
@@ -278,19 +261,15 @@ export default function SeatTile({
           <motion.div
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mt-1 bg-yellow-500/20 border border-yellow-500/40 rounded px-1 py-0.5"
+            className="mt-0.5 bg-yellow-500/20 border border-yellow-500/40 rounded px-1 py-0.5"
           >
-            <span className="text-yellow-300 text-[9px] font-medium">{handLabel}</span>
+            <span className="text-yellow-300 text-[8px] font-medium">{handLabel}</span>
           </motion.div>
         )}
       </motion.div>
 
       {/* Reveal card confirmation modal */}
-      <Modal
-        open={revealConfirm !== null}
-        onClose={() => setRevealConfirm(null)}
-        title="Reveal Card?"
-      >
+      <Modal open={revealConfirm !== null} onClose={() => setRevealConfirm(null)} title="Reveal Card?">
         <p className="text-zinc-300 text-sm mb-4">
           This will show card #{(revealConfirm ?? 0) + 1} to all players. This cannot be undone.
         </p>

@@ -4,9 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useGameStore } from '@/stores/gameStore'
 import { useChipAnimations } from '@/hooks/useChipAnimations'
-import TopBar from '@/components/TopBar'
-import OvalTable from '@/components/OvalTable'
-import { BottomActionBar, OverlayActionBar } from '@/components/ActionBar'
+import PokerTable from '@/components/poker/PokerTable'
 import VoteBanner from '@/components/VoteBanner'
 import PauseBanner from '@/components/PauseBanner'
 import OptionsDrawer from '@/components/OptionsDrawer'
@@ -25,8 +23,6 @@ export default function TablePage() {
     table,
     connectionState,
     holeCards,
-    rabbitHuntCards,
-    actionBarMode,
     voteResolution,
     localPlayerId,
   } = useGameStore()
@@ -71,6 +67,9 @@ export default function TablePage() {
   const isAdmin = localPlayer?.is_admin ?? false
   const isSeated = localPlayer !== null
 
+  // Debug logging
+  console.log('[TablePage] isAdmin:', isAdmin, 'localPlayerId:', localPlayerId, 'pending_sit_requests:', table?.pending_sit_requests)
+
   const handleSitDown = (seat: number) => {
     setSitSeat(seat)
     setSitDownOpen(true)
@@ -80,21 +79,8 @@ export default function TablePage() {
     sendMessage({ type: 'sit_down_request', seat, chips })
   }
 
-  const handleRevealCard = (index: 0 | 1) => {
-    sendMessage({ type: 'reveal_card', card_index: index })
-  }
-
-  const handleRabbitHunt = () => {
-    sendMessage({ type: 'rabbit_hunt_request' })
-  }
-
   const handleVote = (direction: 'for' | 'against') => {
     sendMessage({ type: 'vote', vote: direction })
-  }
-
-  const handleSeatContextMenu = (seat: number, e: React.MouseEvent) => {
-    e.preventDefault()
-    setContextMenuSeat({ seat, x: e.clientX, y: e.clientY })
   }
 
   // Dismiss context menu
@@ -135,92 +121,41 @@ export default function TablePage() {
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col overflow-hidden">
-      {/* Top bar */}
-      <TopBar table={table} onMenuOpen={() => setMenuOpen(true)} />
-
-      {/* Banners (rendered below topbar) */}
+      {/* Banners float above the table */}
       {table && (
-        <>
-          <VoteBanner
-            vote={table.pending_vote}
-            resolution={voteResolution}
-            localPlayerId={localPlayerId}
-            onVote={handleVote}
-          />
-          <PauseBanner table={table} />
-
-          {/* Host approval banner for pending sit requests */}
-          {isAdmin && table.pending_sit_requests.length > 0 && (
-            <HostApprovalBanner
-              requests={table.pending_sit_requests}
-              onApprove={(sid) => sendMessage({ type: 'approve_sit_down', session_id: sid })}
-              onReject={(sid) => sendMessage({ type: 'reject_sit_down', session_id: sid })}
+        <div className="fixed top-0 left-0 right-0 z-50 flex flex-col pointer-events-none">
+          <div className="pointer-events-auto">
+            <VoteBanner
+              vote={table.pending_vote}
+              resolution={voteResolution}
+              localPlayerId={localPlayerId}
+              onVote={handleVote}
             />
-          )}
-        </>
+            <PauseBanner table={table} />
+            {isAdmin && table.pending_sit_requests.length > 0 && (
+              <HostApprovalBanner
+                requests={table.pending_sit_requests}
+                onApprove={(sid) => sendMessage({ type: 'approve_sit_down', session_id: sid })}
+                onReject={(sid) => sendMessage({ type: 'reject_sit_down', session_id: sid })}
+              />
+            )}
+          </div>
+        </div>
       )}
 
-      {/* Main table area */}
-      <main
-        className="flex-1 relative flex items-center justify-center"
-        style={{
-          paddingTop: 56,
-          paddingBottom: actionBarMode === 'bottom' && localPlayer ? 80 : 0,
-          height: '100dvh',
-        }}
-      >
-        {table ? (
-          <div className="w-full h-full">
-            <OvalTable
-              table={table}
-              localPlayerId={localPlayerId}
-              holeCards={holeCards}
-              rabbitHuntCards={rabbitHuntCards}
-              onSitDown={handleSitDown}
-              onRevealCard={handleRevealCard}
-              onRabbitHunt={handleRabbitHunt}
-              onSeatContextMenu={isAdmin ? handleSeatContextMenu : undefined}
-            />
-          </div>
-        ) : (
-          <div className="flex items-center justify-center h-full min-h-[400px]">
-            <p className="text-zinc-600 text-sm">Waiting for table state...</p>
-          </div>
-        )}
-      </main>
-
-      {/* Action bars */}
-      <AnimatePresence>
-        {table && localPlayer && (
-          <>
-            {actionBarMode === 'bottom' && (
-              <BottomActionBar table={table} localPlayer={localPlayer} />
-            )}
-            {actionBarMode === 'overlay' && (
-              <OverlayActionBar table={table} localPlayer={localPlayer} />
-            )}
-          </>
-        )}
-      </AnimatePresence>
-
-      {/* Spectator overlay when not seated */}
-      {table && !isSeated && (
-        <SpectatorOverlay
-          spectatorCount={table.spectators.length}
-          hasEmptySeat={
-            Object.keys(table.players).length < table.rules.max_players
-          }
-          onTakeSeat={() => {
-            // Find first empty seat
-            const takenSeats = new Set(Object.values(table.players).map((p) => p.seat))
-            for (let s = 0; s < table.rules.max_players; s++) {
-              if (!takenSeats.has(s)) {
-                handleSitDown(s)
-                break
-              }
-            }
-          }}
+      {/* Mobile poker table — fills full screen */}
+      {table ? (
+        <PokerTable
+          table={table}
+          localPlayerId={localPlayerId}
+          holeCards={holeCards}
+          onMenuOpen={() => setMenuOpen(true)}
+          onSitDown={handleSitDown}
         />
+      ) : (
+        <div className="flex items-center justify-center h-[100dvh]">
+          <p className="text-zinc-600 text-sm">Waiting for table state...</p>
+        </div>
       )}
 
       {/* Options drawer */}
@@ -260,38 +195,6 @@ export default function TablePage() {
   )
 }
 
-function SpectatorOverlay({
-  spectatorCount,
-  hasEmptySeat,
-  onTakeSeat,
-}: {
-  spectatorCount: number
-  hasEmptySeat: boolean
-  onTakeSeat: () => void
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="fixed bottom-4 left-0 right-0 flex justify-center px-4 z-30 pointer-events-none"
-    >
-      <div className="bg-zinc-900/90 backdrop-blur border border-zinc-700 rounded-xl px-4 py-3 flex items-center gap-4 pointer-events-auto shadow-lg max-w-sm w-full">
-        <div className="flex-1">
-          <p className="text-zinc-400 text-xs">Spectating</p>
-          <p className="text-white text-sm font-medium">{spectatorCount} watching</p>
-        </div>
-        {hasEmptySeat && (
-          <button
-            onClick={onTakeSeat}
-            className="px-4 py-2 bg-green-600 hover:bg-green-500 rounded-lg text-white text-sm font-semibold transition-colors"
-          >
-            Take a Seat
-          </button>
-        )}
-      </div>
-    </motion.div>
-  )
-}
 
 function HostContextMenu({
   seat,

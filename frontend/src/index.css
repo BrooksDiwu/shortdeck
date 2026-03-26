@@ -10,6 +10,33 @@
   --color-chip-black: #1f2937;
   --color-chip-purple: #a855f7;
   --color-chip-yellow: #eab308;
+
+  /* cards-at-hand design tokens (HSL-based) */
+  --color-background: hsl(152 45% 12%);
+  --color-foreground: hsl(45 20% 90%);
+  --color-card: hsl(152 40% 16%);
+  --color-card-foreground: hsl(45 20% 90%);
+  --color-popover: hsl(152 40% 14%);
+  --color-popover-foreground: hsl(45 20% 90%);
+  --color-primary: hsl(45 80% 55%);
+  --color-primary-foreground: hsl(152 45% 8%);
+  --color-secondary: hsl(152 30% 22%);
+  --color-secondary-foreground: hsl(45 20% 90%);
+  --color-muted: hsl(152 25% 20%);
+  --color-muted-foreground: hsl(150 10% 55%);
+  --color-accent: hsl(0 70% 50%);
+  --color-accent-foreground: hsl(0 0% 100%);
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+  --color-border: hsl(152 20% 25%);
+  --color-input: hsl(152 20% 25%);
+  --color-ring: hsl(45 80% 55%);
+  --color-felt: hsl(152 45% 15%);
+  --color-felt-dark: hsl(152 50% 10%);
+  --color-gold: hsl(45 80% 55%);
+  --color-gold-dim: hsl(45 50% 35%);
+  --color-chip-blue: hsl(210 70% 50%);
+  --radius: 0.75rem;
 }
 
 * {
