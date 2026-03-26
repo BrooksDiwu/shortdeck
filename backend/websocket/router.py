@@ -10,9 +10,12 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPExcept
 from ..services.session_service import SessionService
 from ..services.table_service import TableService
 from ..game.betting import BettingEngine
+from ..game.engine import GameEngine
 from ..game.table import ModeVote
 from ..game.table_rules import TableRules
 from ..game.player import Player
+from ..game.variants.holdem import HoldemVariant
+from ..game.variants.shortdeck import ShortdeckVariant
 from .manager import manager
 
 logger = logging.getLogger(__name__)
@@ -68,7 +71,14 @@ async def _grace_timer_task(
 
             BettingEngine.apply_action(table, session_id, auto_action, auto_amount)
             table.action_seq += 1
+
+            if auto_action in ("raise", "all_in"):
+                table.last_aggressor_seat = player.seat
+            elif auto_action == "check" and table.last_aggressor_seat is None:
+                table.last_aggressor_seat = player.seat
+
             _advance_action(table)
+            round_complete = _is_betting_round_complete(table)
 
             event_log = {
                 "seq": table.action_seq,
@@ -104,6 +114,9 @@ async def _grace_timer_task(
                 f"Auto-{auto_action} for disconnected player {session_id} "
                 f"at table {table_id} (seat {player.seat})"
             )
+
+        if round_complete:
+            await _advance_street_or_showdown(table_id, session_id, table, table_service)
 
     except Exception as exc:
         logger.exception(f"Grace timer error for {session_id} at table {table_id}: {exc}")
@@ -284,6 +297,9 @@ async def websocket_endpoint(
             elif msg_type == "host_remove_player":
                 await _handle_host_remove_player(table_id, session_id, msg, table_service)
 
+            elif msg_type == "start_hand":
+                await _handle_start_hand(table_id, session_id, table_service)
+
             else:
                 await manager.send_personal(table_id, session_id, {
                     "type": "error",
@@ -370,8 +386,20 @@ async def _handle_action(
             BettingEngine.apply_action(table, session_id, action, amount)
             table.action_seq += 1
 
-            # Advance action to next player
+            # Update last_aggressor_seat to track who opened/raised.
+            # A raise/all_in resets the aggressor to the current player (everyone must act again).
+            # A check sets the aggressor to the current player only if no aggressor yet,
+            # so action goes around the table once before the street ends.
+            if action in ("raise", "all_in"):
+                table.last_aggressor_seat = player.seat
+            elif action == "check" and table.last_aggressor_seat is None:
+                table.last_aggressor_seat = player.seat
+
+            # Advance action seat, then check if the round is complete.
+            # Round is complete when the next player to act is the last aggressor
+            # and all active bets are equal (everyone has acted and matched the bet).
             _advance_action(table)
+            round_complete = _is_betting_round_complete(table)
 
             # Persist state
             event_log = {
@@ -401,24 +429,223 @@ async def _handle_action(
             )
             await table_service.publish_event(table_id, broadcast_msg)
 
+        if round_complete:
+            await _advance_street_or_showdown(table_id, session_id, table, table_service)
+
     except HTTPException as exc:
         await manager.send_personal(table_id, session_id, {
             "type": "error",
             "code": "LOCK_CONFLICT",
             "message": "Action in progress, please retry",
         })
+async def _handle_start_hand(
+    table_id: str,
+    session_id: str,
+    table_service: TableService,
+) -> None:
+    """Admin starts a new hand from the waiting or between_hands phase."""
+    try:
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+
+            if table.admin_id != session_id:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "NOT_ADMIN",
+                    "message": "Only the admin can start a hand",
+                })
+                return
+
+            if table.phase not in ("waiting", "between_hands"):
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "INVALID_PHASE",
+                    "message": "A hand is already in progress",
+                })
+                return
+
+            active_players = [
+                p for p in table.players.values()
+                if p.status not in ("sitting_out", "disconnected")
+            ]
+            if len(active_players) < 2:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "NOT_ENOUGH_PLAYERS",
+                    "message": "Need at least 2 players to start",
+                })
+                return
+
+            variant = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
+            engine = GameEngine(table, table.rules, variant)
+            engine.start_hand()
+
+            await table_service.save_table(table)
+
+            # Broadcast new state snapshot (masks hole cards per player)
+            for sid in list(table.players.keys()) + list(table.spectators):
+                snap = _build_state_snapshot(table, sid)
+                await manager.send_personal(table_id, sid, snap)
+
+            # Send each player their private hole cards
+            for sid, player in table.players.items():
+                if player.hole_cards:
+                    await manager.send_personal(table_id, sid, {
+                        "type": "deal",
+                        "seq": table.action_seq,
+                        "hand": table.hand_number,
+                        "hole_cards": [c.to_dict() for c in player.hole_cards],
+                    })
+
+            event_log = {
+                "seq": table.action_seq,
+                "hand": table.hand_number,
+                "type": "start_hand",
+                "session_id": session_id,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            await table_service.append_event(table_id, event_log)
+
+    except HTTPException:
+        await manager.send_personal(table_id, session_id, {
+            "type": "error",
+            "code": "LOCK_CONFLICT",
+            "message": "Action in progress, please retry",
+        })
+
+
+def _is_betting_round_complete(table) -> bool:
+    """Return True when all active players have matched the highest bet and acted.
+
+    Called AFTER _advance_action, so current_action_seat points to the next player.
+    The round is done when bets are all equal AND the next player to act is the
+    last aggressor (meaning action has gone all the way around back to them).
+    """
+    active = [p for p in table.players.values() if p.status == "active"]
+    if not active:
+        return True
+    max_bet = max(p.current_bet for p in active)
+    if not all(p.current_bet == max_bet for p in active):
+        return False
+    # All bets are equal. If there's no aggressor recorded, treat as complete.
+    # Otherwise, the round ends when current_action_seat cycles back to the last
+    # aggressor. If the aggressor is no longer active (folded/all_in), bets being
+    # equal is sufficient — nobody else needs to act.
+    if table.last_aggressor_seat is None:
+        return True
+    active_seats = {p.seat for p in active}
+    if table.last_aggressor_seat not in active_seats:
+        return True
+    return table.current_action_seat == table.last_aggressor_seat
+
+
 def _advance_action(table) -> None:
     """Move action to the next active player after an action."""
-    seated = sorted(
+    active = sorted(
         [p for p in table.players.values() if p.status == "active"],
         key=lambda p: p.seat,
     )
-    if not seated:
+    if not active:
         return
     current = table.current_action_seat
-    after = [p for p in seated if p.seat > current]
-    nxt = after[0] if after else seated[0]
+    after = [p for p in active if p.seat > current]
+    nxt = after[0] if after else active[0]
     table.current_action_seat = nxt.seat
+
+
+async def _advance_street_or_showdown(
+    table_id: str,
+    session_id: str,
+    table,
+    table_service: TableService,
+) -> None:
+    """Deal the next street, or run showdown/end_hand if no streets remain."""
+    variant = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
+    engine = GameEngine(table, table.rules, variant)
+    streets = engine.build_streets()  # [flop, turn, river]
+
+    street_order = ["preflop", "flop", "turn", "river"]
+    current_idx = street_order.index(table.phase) if table.phase in street_order else -1
+
+    # Find next street config
+    next_street = None
+    for sc in streets:
+        sc_idx = street_order.index(sc.name) if sc.name in street_order else -1
+        if sc_idx > current_idx:
+            next_street = sc
+            break
+
+    active = [p for p in table.players.values() if p.status in ("active", "all_in")]
+
+    if next_street is None or len([p for p in active if p.status == "active"]) <= 1:
+        # Showdown (showdown() already increments action_seq)
+        winnings = engine.showdown()
+
+        winners_payload = {sid: amt for sid, amt in winnings.items() if amt > 0}
+        broadcast_msg = _build_event_message(
+            table, "hand_complete", session_id,
+            winners=winners_payload,
+            state_patch={
+                "phase": table.phase,
+                "pot": table.pot,
+                "side_pots": [sp.to_dict() for sp in table.side_pots],
+                "players": {sid: {"stack": p.stack, "status": p.status, "hole_cards": [c.to_dict() for c in p.hole_cards], "is_revealed": p.is_revealed}
+                            for sid, p in table.players.items()},
+            },
+        )
+        await table_service.save_table(table)
+        await table_service.publish_event(table_id, broadcast_msg)
+
+        # End hand after a short delay to allow clients to display showdown
+        await asyncio.sleep(3)
+
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+            variant2 = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
+            engine2 = GameEngine(table, table.rules, variant2)
+            engine2.end_hand()
+            # end_hand() already increments action_seq
+            await table_service.save_table(table)
+
+            end_msg = _build_event_message(
+                table, "hand_ended", session_id,
+                state_patch={
+                    "phase": table.phase,
+                    "dealer_seat": table.dealer_seat,
+                    "players": {sid: {"stack": p.stack, "status": p.status, "current_bet": p.current_bet}
+                                for sid, p in table.players.items()},
+                },
+            )
+            await table_service.publish_event(table_id, end_msg)
+    else:
+        # Deal next street (deal_street already increments action_seq)
+        engine.deal_street(next_street)
+
+        # First to act post-flop: first active player left of dealer
+        active_sorted = sorted(
+            [p for p in table.players.values() if p.status == "active"],
+            key=lambda p: p.seat,
+        )
+        after_dealer = [p for p in active_sorted if p.seat > table.dealer_seat]
+        first_to_act = (after_dealer[0] if after_dealer else active_sorted[0]) if active_sorted else None
+        if first_to_act:
+            table.current_action_seat = first_to_act.seat
+
+        await table_service.save_table(table)
+
+        broadcast_msg = _build_event_message(
+            table, "community_cards", session_id,
+            street=table.phase,
+            state_patch={
+                "phase": table.phase,
+                "board": table.board.to_dict(),
+                "pot": table.pot,
+                "current_action_seat": table.current_action_seat,
+                "players": {sid: {"current_bet": p.current_bet}
+                            for sid, p in table.players.items()},
+            },
+        )
+        await table_service.publish_event(table_id, broadcast_msg)
 async def _handle_vote(
     table_id: str,
     session_id: str,
@@ -518,7 +745,7 @@ async def _handle_replay(
         for raw in raw_events:
             try:
                 ev = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
-                if ev.get("seq", 0) > from_seq:
+                if ev.get("seq", 0) >= from_seq:
                     events.append(ev)
             except Exception:
                 pass

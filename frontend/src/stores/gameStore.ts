@@ -72,6 +72,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       const { localSeq, sendMessage } = get()
       const sound = useSoundStore.getState()
 
+      console.log('[ws.onmessage] type:', msg.type, JSON.stringify(msg))
+
       if (msg.type === 'state_snapshot') {
         // Backend sends players as a list; convert to Record<session_id, Player>
         const playersArr = (msg as unknown as Record<string, unknown>).players as Array<Record<string, unknown>>
@@ -181,14 +183,33 @@ export const useGameStore = create<GameState>((set, get) => ({
         return
       }
 
+      // Replay response: backend wraps replayed events in {type:'replay', event:{...}}
+      if (msg.type === 'replay') {
+        const replayMsg = msg as unknown as { type: 'replay'; event: Record<string, unknown> }
+        const ev = replayMsg.event
+        const evSeq = ev.seq as number
+        const curSeq = get().localSeq
+        if (evSeq === curSeq + 1) {
+          get().applyPatch(ev)
+        } else if (evSeq <= curSeq) {
+          // already applied, ignore
+        } else {
+          // still a gap — request again from current position
+          sendMessage({ type: 'replay_request', from_seq: curSeq + 1 })
+        }
+        return
+      }
+
       // Incremental events with seq tracking
       if (msg.type === 'event') {
         const eventMsg = msg as { type: 'event'; seq: number; [key: string]: unknown }
         if (eventMsg.seq !== localSeq + 1) {
           // Gap detected — request replay
+          console.warn('[ws] gap detected: expected seq', localSeq + 1, 'got', eventMsg.seq, '— requesting replay')
           sendMessage({ type: 'replay_request', from_seq: localSeq + 1 })
           return
         }
+        console.log('[event] applying patch seq:', eventMsg.seq, 'event_type:', eventMsg.event_type, 'current_action_seat:', eventMsg.current_action_seat, 'state_patch:', JSON.stringify((eventMsg as Record<string,unknown>).state_patch))
         get().applyPatch(eventMsg)
         // Trigger sounds based on event sub-type
         const evType = eventMsg.event_type as string | undefined
@@ -225,28 +246,33 @@ export const useGameStore = create<GameState>((set, get) => ({
       if (!state.table) return {}
       const seq = event.seq as number
 
+      // Backend nests table fields under state_patch — flatten into event
+      const patch = typeof event.state_patch === 'object' && event.state_patch !== null
+        ? { ...event, ...(event.state_patch as Record<string, unknown>) }
+        : event
+
       // Merge top-level table fields from event
       const tableUpdates: Partial<Table> = {}
 
-      if ('phase' in event) tableUpdates.phase = event.phase as Table['phase']
-      if ('pot' in event) tableUpdates.pot = event.pot as number
-      if ('side_pots' in event) tableUpdates.side_pots = event.side_pots as Table['side_pots']
-      if ('board' in event) tableUpdates.board = event.board as Table['board']
-      if ('current_action_seat' in event) tableUpdates.current_action_seat = event.current_action_seat as number
-      if ('dealer_seat' in event) tableUpdates.dealer_seat = event.dealer_seat as number
-      if ('hand_number' in event) tableUpdates.hand_number = event.hand_number as number
-      if ('pending_vote' in event) tableUpdates.pending_vote = event.pending_vote as Table['pending_vote']
-      if ('is_paused' in event) tableUpdates.is_paused = event.is_paused as boolean
-      if ('pause_requested_by' in event) tableUpdates.pause_requested_by = event.pause_requested_by as string | null
-      if ('spectators' in event) tableUpdates.spectators = event.spectators as string[]
-      if ('pending_sit_requests' in event) tableUpdates.pending_sit_requests = event.pending_sit_requests as Table['pending_sit_requests']
-      if ('player_join_order' in event) tableUpdates.player_join_order = event.player_join_order as string[]
-      if ('admin_id' in event) tableUpdates.admin_id = event.admin_id as string
+      if ('phase' in patch) tableUpdates.phase = patch.phase as Table['phase']
+      if ('pot' in patch) tableUpdates.pot = patch.pot as number
+      if ('side_pots' in patch) tableUpdates.side_pots = patch.side_pots as Table['side_pots']
+      if ('board' in patch) tableUpdates.board = patch.board as Table['board']
+      if ('current_action_seat' in patch) tableUpdates.current_action_seat = patch.current_action_seat as number
+      if ('dealer_seat' in patch) tableUpdates.dealer_seat = patch.dealer_seat as number
+      if ('hand_number' in patch) tableUpdates.hand_number = patch.hand_number as number
+      if ('pending_vote' in patch) tableUpdates.pending_vote = patch.pending_vote as Table['pending_vote']
+      if ('is_paused' in patch) tableUpdates.is_paused = patch.is_paused as boolean
+      if ('pause_requested_by' in patch) tableUpdates.pause_requested_by = patch.pause_requested_by as string | null
+      if ('spectators' in patch) tableUpdates.spectators = patch.spectators as string[]
+      if ('pending_sit_requests' in patch) tableUpdates.pending_sit_requests = patch.pending_sit_requests as Table['pending_sit_requests']
+      if ('player_join_order' in patch) tableUpdates.player_join_order = patch.player_join_order as string[]
+      if ('admin_id' in patch) tableUpdates.admin_id = patch.admin_id as string
 
       // Player updates
       let newPlayers = { ...state.table.players }
-      if ('players' in event && event.players && typeof event.players === 'object') {
-        const playerUpdates = event.players as Record<string, Partial<Table['players'][string]>>
+      if ('players' in patch && patch.players && typeof patch.players === 'object') {
+        const playerUpdates = patch.players as Record<string, Partial<Table['players'][string]>>
         for (const [id, update] of Object.entries(playerUpdates)) {
           if (newPlayers[id]) {
             newPlayers[id] = { ...newPlayers[id], ...update }
@@ -255,8 +281,8 @@ export const useGameStore = create<GameState>((set, get) => ({
           }
         }
       }
-      if ('removed_players' in event && Array.isArray(event.removed_players)) {
-        for (const id of event.removed_players as string[]) {
+      if ('removed_players' in patch && Array.isArray(patch.removed_players)) {
+        for (const id of patch.removed_players as string[]) {
           delete newPlayers[id]
         }
       }
@@ -270,8 +296,12 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   sendMessage: (msg: ClientMessage) => {
     const { ws } = get()
+    console.log('[sendMessage] msg:', msg, 'ws:', ws?.readyState, 'OPEN=', WebSocket.OPEN)
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg))
+      console.log('[sendMessage] sent OK')
+    } else {
+      console.warn('[sendMessage] DROPPED — ws not open. readyState:', ws?.readyState, 'ws:', ws)
     }
   },
 

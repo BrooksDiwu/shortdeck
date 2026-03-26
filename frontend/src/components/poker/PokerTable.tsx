@@ -25,14 +25,20 @@ interface PokerTableProps {
   holeCards: Card[];
   onMenuOpen: () => void;
   onSitDown: (seat: number) => void;
+  onStartHand: () => void;
 }
 
-const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown }: PokerTableProps) => {
+const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, onStartHand }: PokerTableProps) => {
   const players = Object.values(table.players).sort((a, b) => a.seat - b.seat);
   const localPlayer = players.find((p) => p.session_id === localPlayerId) ?? null;
 
   const board = table.board.primary;
-  const pot = table.pot + table.side_pots.reduce((s, sp) => s + sp.amount, 0);
+  const pot = table.pot;
+  const isAdmin = localPlayerId === table.admin_id;
+  const canStart = isAdmin && (table.phase === "waiting" || table.phase === "between_hands");
+  const activePlayers = Object.values(table.players).filter(
+    (p) => p.status !== "sitting_out" && p.status !== "disconnected"
+  );
 
   return (
     <div className="w-full max-w-[430px] mx-auto h-[100dvh] flex flex-col bg-felt-dark overflow-hidden">
@@ -74,6 +80,22 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown }: 
                 className="w-10 h-14 rounded-lg border border-border/30 opacity-20"
               />
             ))}
+          </div>
+        )}
+
+        {/* Start Game button — admin only, when not in a hand */}
+        {canStart && (
+          <div className="absolute top-[54%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1">
+            <button
+              onClick={onStartHand}
+              disabled={activePlayers.length < 2}
+              className="px-6 py-2.5 rounded-full bg-primary text-primary-foreground font-semibold text-sm shadow-lg hover:bg-primary/90 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {table.phase === "waiting" ? "Start Game" : "Deal Next Hand"}
+            </button>
+            {activePlayers.length < 2 && (
+              <span className="text-[10px] text-muted-foreground">Need 2+ players</span>
+            )}
           </div>
         )}
 

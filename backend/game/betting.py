@@ -127,6 +127,7 @@ class BettingEngine:
         """Reset current_bet for all players at the start of a new street."""
         for player in table.players.values():
             player.current_bet = 0
+        table.last_aggressor_seat = None
 
     @staticmethod
     def post_blinds(table: "Table") -> None:
@@ -166,3 +167,4 @@ class BettingEngine:
             bb_player.status = "all_in"
 
         table.current_action_seat = seated[utg_idx].seat
+        table.last_aggressor_seat = bb_player.seat  # BB is the opener; action must return to them

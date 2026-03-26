@@ -151,6 +151,7 @@ export default function TablePage() {
           holeCards={holeCards}
           onMenuOpen={() => setMenuOpen(true)}
           onSitDown={handleSitDown}
+          onStartHand={() => sendMessage({ type: 'start_hand' })}
         />
       ) : (
         <div className="flex items-center justify-center h-[100dvh]">

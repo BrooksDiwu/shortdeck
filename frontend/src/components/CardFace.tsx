@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import type { Card } from '@/types'
-import { getSuitColor, getSuitSymbol } from '@/utils/gameUtils'
+import { getSuitColor, getSuitSymbol, getRankDisplay } from '@/utils/gameUtils'
 
 interface CardFaceProps {
   card: Card
@@ -20,6 +20,7 @@ export default function CardFace({ card, size = 'md', ghost = false, highlighted
   const dims = SIZE_MAP[size]
   const color = getSuitColor(card.suit)
   const suit = getSuitSymbol(card.suit)
+  const rank = getRankDisplay(card.rank)
 
   return (
     <div
@@ -33,7 +34,7 @@ export default function CardFace({ card, size = 'md', ghost = false, highlighted
     >
       {/* Top-left rank + suit */}
       <div className="self-start leading-none" style={{ color }}>
-        <div className={`font-bold ${dims.rank} leading-none`}>{card.rank}</div>
+        <div className={`font-bold ${dims.rank} leading-none`}>{rank}</div>
         <div className={`${dims.suit} leading-none`}>{suit}</div>
       </div>
 
@@ -44,7 +45,7 @@ export default function CardFace({ card, size = 'md', ghost = false, highlighted
 
       {/* Bottom-right rank + suit (rotated) */}
       <div className="self-end leading-none rotate-180" style={{ color }}>
-        <div className={`font-bold ${dims.rank} leading-none`}>{card.rank}</div>
+        <div className={`font-bold ${dims.rank} leading-none`}>{rank}</div>
         <div className={`${dims.suit} leading-none`}>{suit}</div>
       </div>
     </div>

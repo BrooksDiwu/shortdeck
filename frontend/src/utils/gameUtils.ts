@@ -22,16 +22,26 @@ export function formatAmount(amount: number, denomination: 'chips' | 'usd'): str
 
 export function getCardLabel(card: Card): string {
   const suitSymbol: Record<string, string> = { s: '♠', h: '♥', d: '♦', c: '♣' }
-  return `${card.rank}${suitSymbol[card.suit] ?? card.suit}`
+  const rankMap: Record<number, string> = { 10: 'T', 11: 'J', 12: 'Q', 13: 'K', 14: 'A' }
+  const n = Number(card.rank)
+  const rankStr = rankMap[n] ?? String(card.rank)
+  return `${rankStr}${suitSymbol[card.suit] ?? card.suit}`
 }
 
 export function getSuitColor(suit: string): string {
-  return suit === 'h' || suit === 'd' ? '#ef4444' : '#f9fafb'
+  if (suit === 'h' || suit === 'd') return '#ef4444'
+  return '#1a1a1a'
 }
 
 export function getSuitSymbol(suit: string): string {
   const map: Record<string, string> = { s: '♠', h: '♥', d: '♦', c: '♣' }
   return map[suit] ?? suit
+}
+
+export function getRankDisplay(rank: number | string): string {
+  const map: Record<number, string> = { 10: 'T', 11: 'J', 12: 'Q', 13: 'K', 14: 'A' }
+  const n = Number(rank)
+  return map[n] ?? String(rank)
 }
 
 // Polar coordinate math for seat positioning

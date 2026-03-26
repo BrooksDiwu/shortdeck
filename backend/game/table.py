@@ -71,6 +71,7 @@ class Table:
     pending_sit_requests: list[dict] = field(default_factory=list)
     is_paused: bool = False
     pause_requested_by: str | None = None
+    last_aggressor_seat: int | None = None  # seat of last bet/raise, or opener on check-around streets
 
     def to_dict(self) -> dict:
         return {
@@ -93,6 +94,7 @@ class Table:
             "pending_sit_requests": self.pending_sit_requests,
             "is_paused": self.is_paused,
             "pause_requested_by": self.pause_requested_by,
+            "last_aggressor_seat": self.last_aggressor_seat,
         }
 
     @classmethod
@@ -117,4 +119,5 @@ class Table:
             pending_sit_requests=data.get("pending_sit_requests", []),
             is_paused=data.get("is_paused", False),
             pause_requested_by=data.get("pause_requested_by", None),
+            last_aggressor_seat=data.get("last_aggressor_seat", None),
         )

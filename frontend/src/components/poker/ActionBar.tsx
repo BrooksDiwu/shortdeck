@@ -16,7 +16,7 @@ function computeCallAmount(table: Table, player: Player): number {
 
 function computeMinRaise(table: Table): number {
   const maxBet = Math.max(...Object.values(table.players).map((p) => p.current_bet));
-  return maxBet * 2;
+  return maxBet + table.rules.big_blind;
 }
 
 function computePotLimit(table: Table, player: Player): number {
@@ -27,7 +27,7 @@ function computePotLimit(table: Table, player: Player): number {
 
 function computeMaxRaise(table: Table, player: Player): number {
   if (table.rules.betting === "pot_limit") {
-    return Math.min(player.stack + player.current_bet, computePotLimit(table, player) + player.current_bet);
+    return Math.min(player.stack + player.current_bet, computePotLimit(table, player));
   }
   return player.stack + player.current_bet;
 }
@@ -47,6 +47,7 @@ const ActionBar = ({ table, localPlayer }: ActionBarProps) => {
 
   const handleAction = useCallback(
     (action: "fold" | "check" | "call" | "raise" | "all_in", amount?: number) => {
+      console.log('[ActionBar] handleAction:', action, amount);
       sendMessage({ type: "action", action, amount });
     },
     [sendMessage]
@@ -54,6 +55,8 @@ const ActionBar = ({ table, localPlayer }: ActionBarProps) => {
 
   const isActing = table.current_action_seat === localPlayer.seat;
   const isHandActive = ["preflop", "flop", "turn", "river"].includes(table.phase);
+
+  console.log('[ActionBar] isActing:', isActing, 'isHandActive:', isHandActive, 'current_action_seat:', table.current_action_seat, 'localSeat:', localPlayer.seat, 'phase:', table.phase);
 
   if (!isActing || !isHandActive) return null;
 
