@@ -115,7 +115,7 @@ export const useGameStore = create<GameState>((set, get) => ({
         const playersArr = (msg as unknown as Record<string, unknown>).players as Array<Record<string, unknown>>
         const playersMap = Object.fromEntries(
           playersArr.map((p) => [p.session_id as string, p])
-        ) as Table['players']
+        ) as unknown as Table['players']
         const raw = msg as unknown as Record<string, unknown>
         const snapshot = { ...raw, players: playersMap, admin_id: raw.admin_id ?? '', player_join_order: raw.player_join_order ?? [] } as unknown as Table
         get().applySnapshot(snapshot, (msg as unknown as { seq: number }).seq)
@@ -182,7 +182,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       // Replay response: backend wraps replayed events in {type:'replay', event:{...}}
-      if (msg.type === 'replay') {
+      if ((msg as unknown as { type: string }).type === 'replay') {
         const replayMsg = msg as unknown as { type: 'replay'; event: Record<string, unknown> }
         const ev = replayMsg.event
         const evSeq = ev.seq as number
@@ -294,6 +294,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       if ('pending_sit_requests' in patch) tableUpdates.pending_sit_requests = patch.pending_sit_requests as Table['pending_sit_requests']
       if ('player_join_order' in patch) tableUpdates.player_join_order = patch.player_join_order as string[]
       if ('admin_id' in patch) tableUpdates.admin_id = patch.admin_id as string
+      if ('hand_log' in patch) tableUpdates.hand_log = patch.hand_log as Table['hand_log']
 
       // Handle event_type-implied state changes not present as explicit fields
       if (evType === 'game_paused') {

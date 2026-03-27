@@ -131,7 +131,7 @@ class BettingEngine:
 
     @staticmethod
     def post_blinds(table: "Table") -> None:
-        """Post small and big blinds. Advances action to player after BB."""
+        """Post blinds and set the correct preflop opener."""
         seated = sorted(
             [p for p in table.players.values() if p.status not in ("sitting_out", "disconnected")],
             key=lambda p: p.seat,
@@ -174,4 +174,5 @@ class BettingEngine:
             bb_player.status = "all_in"
 
         table.current_action_seat = seated[utg_idx].seat
-        table.last_aggressor_seat = bb_player.seat  # BB is the opener; action must return to them
+        # Preflop ends after the BB gets their option and action cycles back to the opener.
+        table.last_aggressor_seat = seated[utg_idx].seat

@@ -30,6 +30,23 @@ test = ""
 _grace_timers: dict[tuple[str, str], asyncio.Task] = {}
 
 
+def _format_action_line(player_name: str, action: str, amount: int, auto: bool = False) -> str:
+    prefix = f"{player_name}: "
+    suffix = " (auto)" if auto else ""
+
+    if action == "fold":
+        return f"{prefix}folds{suffix}"
+    if action == "check":
+        return f"{prefix}checks{suffix}"
+    if action == "call":
+        return f"{prefix}calls {amount}{suffix}"
+    if action == "raise":
+        return f"{prefix}raises to {amount}{suffix}"
+    if action == "all_in":
+        return f"{prefix}is all-in for {amount}{suffix}"
+    return f"{prefix}{action} {amount}{suffix}"
+
+
 async def _grace_timer_task(
     table_id: str,
     session_id: str,
@@ -74,8 +91,13 @@ async def _grace_timer_task(
             # Mid-hand: fold them out of the current hand.
             # sitting_out will be applied by end_hand() since disconnect_at is set.
             if is_their_turn:
+                before_pot = table.pot
                 BettingEngine.apply_action(table, session_id, "fold", 0)
                 table.action_seq += 1
+                put_in = max(0, table.pot - before_pot)
+                table.current_hand_actions.append(
+                    _format_action_line(player.name, "fold", put_in, auto=True)
+                )
 
                 _advance_action(table)
                 round_complete = _is_betting_round_complete(table)
@@ -97,6 +119,9 @@ async def _grace_timer_task(
                 # Status stays "folded" until end_hand() transitions it to "sitting_out".
                 player.status = "folded"
                 table.action_seq += 1
+                table.current_hand_actions.append(
+                    _format_action_line(player.name, "fold", 0, auto=True)
+                )
                 round_complete = _is_betting_round_complete(table)
 
             await table_service.save_table(table)
@@ -160,7 +185,28 @@ def _build_state_snapshot(table, session_id: str) -> dict:
         "admin_id": table.admin_id,
         "player_join_order": table.player_join_order,
         "table_id": table.table_id,
+        "hand_log": [entry.to_dict() for entry in table.hand_log],
     }
+
+
+def _build_public_hand_complete_players(table) -> dict[str, dict]:
+    latest_entry = table.hand_log[0] if table.hand_log else None
+    shown_player_ids = {
+        hand.session_id for hand in latest_entry.shown_hands
+    } if latest_entry and latest_entry.showdown else set()
+
+    players_patch: dict[str, dict] = {}
+    for sid, player in table.players.items():
+        is_shown = sid in shown_player_ids
+        players_patch[sid] = {
+            "stack": player.stack,
+            "status": player.status,
+            "hole_cards": [c.to_dict() for c in player.hole_cards] if is_shown else [],
+            "is_revealed": [True] * len(player.hole_cards) if is_shown else [False] * len(player.hole_cards),
+        }
+    return players_patch
+
+
 def _build_event_message(table, event_type: str, session_id: str, **kwargs) -> dict:
     """Build an incremental event broadcast message."""
     msg: dict = {
@@ -505,8 +551,14 @@ async def _handle_action(
                 })
                 return
 
+            before_pot = table.pot
             BettingEngine.apply_action(table, session_id, action, amount)
             table.action_seq += 1
+            put_in = max(0, table.pot - before_pot)
+            action_amount = player.current_bet if action == "raise" else put_in
+            table.current_hand_actions.append(
+                _format_action_line(player.name, action, action_amount)
+            )
 
             # Update last_aggressor_seat to track who opened/raised.
             # A raise/all_in resets the aggressor to the current player (everyone must act again).
@@ -729,8 +781,8 @@ async def _advance_street_or_showdown(
                 "phase": table.phase,
                 "pot": table.pot,
                 "side_pots": [sp.to_dict() for sp in table.side_pots],
-                "players": {sid: {"stack": p.stack, "status": p.status, "hole_cards": [c.to_dict() for c in p.hole_cards], "is_revealed": p.is_revealed}
-                            for sid, p in table.players.items()},
+                "players": _build_public_hand_complete_players(table),
+                "hand_log": [entry.to_dict() for entry in table.hand_log],
             },
         )
         await table_service.save_table(table)

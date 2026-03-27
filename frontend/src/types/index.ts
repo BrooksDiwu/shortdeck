@@ -53,6 +53,33 @@ export interface PendingSitRequest {
   name?: string
 }
 
+export interface HandLogWinner {
+  session_id: string
+  name: string
+  amount_won: number
+  hand_description: string | null
+}
+
+export interface HandLogShownHand {
+  session_id: string
+  name: string
+  seat: number
+  hole_cards: Card[]
+  best_hand: string
+  amount_won: number
+}
+
+export interface HandLogEntry {
+  hand_number: number
+  completed_at: string
+  showdown: boolean
+  pot: number
+  board: { primary: Card[]; secondary: Card[] }
+  winners: HandLogWinner[]
+  shown_hands: HandLogShownHand[]
+  action_lines: string[]
+}
+
 export interface Table {
   table_id: string
   players: Record<string, Player>
@@ -72,6 +99,7 @@ export interface Table {
   pending_sit_requests: PendingSitRequest[]
   is_paused: boolean
   pause_requested_by: string | null
+  hand_log: HandLogEntry[]
 }
 
 export interface TableResponse {

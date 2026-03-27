@@ -50,6 +50,101 @@ class ModeVote:
             votes_against=set(data["votes_against"]),
             expires_at=datetime.fromisoformat(data["expires_at"]),
         )
+
+
+@dataclass
+class HandLogWinner:
+    session_id: str
+    name: str
+    amount_won: int
+    hand_description: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "name": self.name,
+            "amount_won": self.amount_won,
+            "hand_description": self.hand_description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "HandLogWinner":
+        return cls(
+            session_id=data["session_id"],
+            name=data["name"],
+            amount_won=data["amount_won"],
+            hand_description=data.get("hand_description"),
+        )
+
+
+@dataclass
+class HandLogShownHand:
+    session_id: str
+    name: str
+    seat: int
+    hole_cards: list[Card]
+    best_hand: str
+    amount_won: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "name": self.name,
+            "seat": self.seat,
+            "hole_cards": [c.to_dict() for c in self.hole_cards],
+            "best_hand": self.best_hand,
+            "amount_won": self.amount_won,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "HandLogShownHand":
+        return cls(
+            session_id=data["session_id"],
+            name=data["name"],
+            seat=data["seat"],
+            hole_cards=[Card.from_dict(c) for c in data.get("hole_cards", [])],
+            best_hand=data["best_hand"],
+            amount_won=data.get("amount_won", 0),
+        )
+
+
+@dataclass
+class HandLogEntry:
+    hand_number: int
+    completed_at: datetime
+    showdown: bool
+    pot: int
+    board: Board
+    winners: list[HandLogWinner] = field(default_factory=list)
+    shown_hands: list[HandLogShownHand] = field(default_factory=list)
+    action_lines: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "hand_number": self.hand_number,
+            "completed_at": self.completed_at.isoformat(),
+            "showdown": self.showdown,
+            "pot": self.pot,
+            "board": self.board.to_dict(),
+            "winners": [winner.to_dict() for winner in self.winners],
+            "shown_hands": [hand.to_dict() for hand in self.shown_hands],
+            "action_lines": self.action_lines,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "HandLogEntry":
+        return cls(
+            hand_number=data["hand_number"],
+            completed_at=datetime.fromisoformat(data["completed_at"]),
+            showdown=data["showdown"],
+            pot=data["pot"],
+            board=Board.from_dict(data["board"]),
+            winners=[HandLogWinner.from_dict(w) for w in data.get("winners", [])],
+            shown_hands=[HandLogShownHand.from_dict(hand) for hand in data.get("shown_hands", [])],
+            action_lines=data.get("action_lines", []),
+        )
+
+
 @dataclass
 class Table:
     table_id: str
@@ -72,6 +167,8 @@ class Table:
     is_paused: bool = False
     pause_requested_by: str | None = None
     last_aggressor_seat: int | None = None  # seat of last bet/raise, or opener on check-around streets
+    hand_log: list[HandLogEntry] = field(default_factory=list)
+    current_hand_actions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -95,6 +192,8 @@ class Table:
             "is_paused": self.is_paused,
             "pause_requested_by": self.pause_requested_by,
             "last_aggressor_seat": self.last_aggressor_seat,
+            "hand_log": [entry.to_dict() for entry in self.hand_log],
+            "current_hand_actions": self.current_hand_actions,
         }
 
     @classmethod
@@ -120,4 +219,6 @@ class Table:
             is_paused=data.get("is_paused", False),
             pause_requested_by=data.get("pause_requested_by", None),
             last_aggressor_seat=data.get("last_aggressor_seat", None),
+            hand_log=[HandLogEntry.from_dict(entry) for entry in data.get("hand_log", [])],
+            current_hand_actions=data.get("current_hand_actions", []),
         )

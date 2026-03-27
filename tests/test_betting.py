@@ -10,6 +10,7 @@ from backend.game.table import Table, Board
 from backend.game.table_rules import TableRules
 from backend.game.deck import Deck
 from backend.game.betting import BettingEngine, SidePot
+from backend.websocket.router import _advance_action, _is_betting_round_complete
 
 
 def make_rules(betting: str = "no_limit") -> TableRules:
@@ -383,6 +384,47 @@ class TestSplitPot:
         assert table.players["C"].current_bet == 100  # BB
         assert table.pot == 150
         assert table.current_action_seat == 3  # UTG (seat 3)
+
+    def test_post_blinds_heads_up_button_posts_sb_and_acts_first(self):
+        """Heads-up preflop: dealer/button is the SB and opens the action."""
+        rules = make_rules()
+        a = make_player("A", stack=1000, seat=0)  # dealer/button/SB
+        b = make_player("B", stack=1000, seat=1)  # BB
+
+        table = make_table([a, b], pot=0, rules=rules)
+        table.dealer_seat = 0
+
+        BettingEngine.post_blinds(table)
+
+        assert table.players["A"].current_bet == 50
+        assert table.players["B"].current_bet == 100
+        assert table.pot == 150
+        assert table.current_action_seat == 0
+        assert table.last_aggressor_seat == 0
+
+    def test_heads_up_preflop_round_waits_for_big_blind_option(self):
+        """A limped heads-up pot should not close until the BB takes their option."""
+        rules = make_rules()
+        a = make_player("A", stack=1000, seat=0)  # dealer/button/SB
+        b = make_player("B", stack=1000, seat=1)  # BB
+
+        table = make_table([a, b], pot=0, rules=rules)
+        table.phase = "preflop"
+        table.dealer_seat = 0
+
+        BettingEngine.post_blinds(table)
+
+        BettingEngine.apply_action(table, "A", "call")
+        _advance_action(table)
+
+        assert table.current_action_seat == 1
+        assert not _is_betting_round_complete(table)
+
+        BettingEngine.apply_action(table, "B", "check")
+        _advance_action(table)
+
+        assert table.current_action_seat == 0
+        assert _is_betting_round_complete(table)
 
     def test_reset_street_bets(self):
         """All current_bets reset to 0 at start of new street."""

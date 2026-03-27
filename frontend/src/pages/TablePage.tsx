@@ -11,6 +11,7 @@ import OptionsDrawer from '@/components/OptionsDrawer'
 import SitDownModal from '@/components/SitDownModal'
 import HostApprovalBanner from '@/components/HostApprovalBanner'
 import ConnectionStatus from '@/components/ConnectionStatus'
+import HandLogModal from '@/components/poker/HandLogModal'
 
 export default function TablePage() {
   const { id: tableId } = useParams<{ id: string }>()
@@ -38,6 +39,7 @@ export default function TablePage() {
   const [sitDownOpen, setSitDownOpen] = useState(false)
   const [contextMenuSeat, setContextMenuSeat] = useState<{ seat: number; x: number; y: number } | null>(null)
   const [pendingSitOut, setPendingSitOut] = useState(false)
+  const [handLogOpen, setHandLogOpen] = useState(false)
 
   // Auto-dismiss server error toast
   useEffect(() => {
@@ -210,6 +212,7 @@ export default function TablePage() {
           localPlayerId={localPlayerId}
           holeCards={holeCards}
           onMenuOpen={() => setMenuOpen(true)}
+          onHandLogOpen={() => setHandLogOpen(true)}
           onSitDown={handleSitDown}
           onStartHand={() => sendMessage({ type: 'start_hand' })}
           pendingSitOut={pendingSitOut}
@@ -240,6 +243,15 @@ export default function TablePage() {
         onConfirm={handleSitDownConfirm}
         onClose={() => setSitDownOpen(false)}
       />
+
+      {table && (
+        <HandLogModal
+          open={handLogOpen}
+          onClose={() => setHandLogOpen(false)}
+          entries={table.hand_log}
+          denomination={table.rules.denomination}
+        />
+      )}
 
       {/* Context menu for host */}
       <AnimatePresence>

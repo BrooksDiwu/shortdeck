@@ -351,6 +351,25 @@ class TestShowdown:
         engine.showdown()
         assert engine.table.players["A"].stack == 1100  # 900 + 200
 
+    def test_showdown_adds_hand_log_entry(self):
+        hole_a = [_c(R.ACE, H), _c(R.KING, H)]
+        hole_b = [_c(R.TWO, C), _c(R.THREE, D)]
+        community = [_c(R.QUEEN, H), _c(R.JACK, H), _c(R.NINE, H), _c(R.FOUR, S), _c(R.FIVE, S)]
+        engine = self._setup_showdown(hole_a, hole_b, community)
+
+        engine.showdown()
+
+        assert len(engine.table.hand_log) == 1
+        entry = engine.table.hand_log[0]
+        assert entry.showdown is True
+        assert entry.winners[0].session_id == "A"
+        assert entry.winners[0].hand_description == "Flush"
+        assert entry.shown_hands[0].hole_cards == hole_a
+        assert entry.shown_hands[1].hole_cards == hole_b
+        assert "*** SHOWDOWN ***" in entry.action_lines
+        assert any("A: shows" in line for line in entry.action_lines)
+        assert any("A: wins 200 with Flush" == line for line in entry.action_lines)
+
     def test_showdown_with_side_pots(self):
         """All-in player can only win their eligible pot."""
         players = {
@@ -398,6 +417,34 @@ class TestShowdown:
         winnings = engine.showdown()
         assert winnings["A"] == 0
         assert winnings["B"] == 200
+
+    def test_fold_win_adds_hidden_hand_log_entry(self):
+        players = {
+            "A": _make_player("A", seat=0, stack=900),
+            "B": _make_player("B", seat=1, stack=900),
+        }
+        players["A"].hole_cards = [_c(R.ACE, H), _c(R.KING, H)]
+        players["A"].status = "folded"
+        players["B"].hole_cards = [_c(R.TWO, C), _c(R.THREE, D)]
+        players["A"].total_in = 100
+        players["B"].total_in = 100
+
+        rules = TableRules(variant="holdem", betting="no_limit", small_blind=50, big_blind=100)
+        table = _make_table(players, rules, pot=200)
+        table.phase = "flop"
+        table.board.primary = [_c(R.QUEEN, H), _c(R.JACK, H), _c(R.NINE, H)]
+        engine = GameEngine(table, rules, HoldemVariant())
+
+        engine.showdown()
+
+        assert len(engine.table.hand_log) == 1
+        entry = engine.table.hand_log[0]
+        assert entry.showdown is False
+        assert entry.shown_hands == []
+        assert entry.winners[0].session_id == "B"
+        assert entry.winners[0].hand_description is None
+        assert "*** HAND ENDS BEFORE SHOWDOWN ***" in entry.action_lines
+        assert any("B: wins 200" == line for line in entry.action_lines)
 
 
 # ===================================================================

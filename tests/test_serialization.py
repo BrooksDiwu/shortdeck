@@ -8,7 +8,7 @@ from backend.game.betting import SidePot
 from backend.game.card import Card, Rank, Suit
 from backend.game.deck import Deck
 from backend.game.player import Player
-from backend.game.table import Board, ModeVote, Table
+from backend.game.table import Board, HandLogEntry, HandLogShownHand, HandLogWinner, ModeVote, Table
 from backend.game.table_rules import TableRules
 
 
@@ -311,6 +311,41 @@ class TestTableSerialization:
             votes_against=set(),
             expires_at=datetime(2025, 6, 15, 13, 0, 0),
         )
+        hand_log = [
+            HandLogEntry(
+                hand_number=4,
+                completed_at=datetime(2025, 6, 15, 11, 59, 0),
+                showdown=True,
+                pot=300,
+                board=Board(primary=[_c(R.ACE, D), _c(R.KING, D), _c(R.QUEEN, D)]),
+                winners=[
+                    HandLogWinner(
+                        session_id="alice",
+                        name="Alice",
+                        amount_won=300,
+                        hand_description="Flush",
+                    )
+                ],
+                shown_hands=[
+                    HandLogShownHand(
+                        session_id="alice",
+                        name="Alice",
+                        seat=0,
+                        hole_cards=[_c(R.TEN, D), _c(R.NINE, D)],
+                        best_hand="Flush",
+                        amount_won=300,
+                    )
+                ],
+                action_lines=[
+                    "Hand #4 started",
+                    "Alice: posts small blind 50",
+                    "Bob: posts big blind 100",
+                    "*** SHOWDOWN ***",
+                    "Alice: shows [Td 9d] (Flush)",
+                    "Alice: wins 300 with Flush",
+                ],
+            )
+        ]
         return Table(
             table_id="table-1",
             players=players,
@@ -327,6 +362,8 @@ class TestTableSerialization:
             hand_number=5,
             action_seq=12,
             pending_vote=vote,
+            hand_log=hand_log,
+            current_hand_actions=["Hand #5 started"],
         )
 
     def test_full_round_trip(self):
@@ -342,6 +379,11 @@ class TestTableSerialization:
         assert restored.phase == "flop"
         assert restored.hand_number == 5
         assert restored.action_seq == 12
+        assert len(restored.hand_log) == 1
+        assert restored.hand_log[0].winners[0].hand_description == "Flush"
+        assert restored.hand_log[0].shown_hands[0].hole_cards == [_c(R.TEN, D), _c(R.NINE, D)]
+        assert restored.hand_log[0].action_lines[0] == "Hand #4 started"
+        assert restored.current_hand_actions == ["Hand #5 started"]
 
         # Players
         assert set(restored.players.keys()) == {"alice", "bob"}
