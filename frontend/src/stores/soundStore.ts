@@ -4,6 +4,7 @@ import { Howl } from 'howler'
 type SoundKey =
   | 'card_deal'
   | 'community_card'
+  | 'check'
   | 'chip_bet'
   | 'pot_collected_small'
   | 'pot_collected_large'
@@ -16,6 +17,7 @@ type SoundKey =
 const SOUND_PATHS: Record<SoundKey, string> = {
   card_deal: '/sounds/card_deal.mp3',
   community_card: '/sounds/community_card.mp3',
+  check: '/sounds/check_knock.mp3',
   chip_bet: '/sounds/chip_bet.mp3',
   pot_collected_small: '/sounds/pot_small.mp3',
   pot_collected_large: '/sounds/pot_large.mp3',

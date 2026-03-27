@@ -77,14 +77,14 @@ class GameEngine:
         new_cards = table.deck.deal(n)
         table.board.primary.extend(new_cards)
 
-        if self.rules.extra_flop and street.name in ("flop", "turn", "river"):
+        if self.rules.extra_flop and street.name == "flop":
             secondary_cards = table.deck.deal(n)
             table.board.secondary.extend(secondary_cards)
 
         table.current_hand_actions.append(
             f"*** {street.name.upper()} *** [{self._format_cards(new_cards)}]"
         )
-        if self.rules.extra_flop and street.name in ("flop", "turn", "river"):
+        if self.rules.extra_flop and street.name == "flop":
             dealt_secondary = table.board.secondary[-n:] if n > 0 else []
             table.current_hand_actions.append(
                 f"*** {street.name.upper()} (Board 2) *** [{self._format_cards(dealt_secondary)}]"
@@ -154,7 +154,9 @@ class GameEngine:
 
             # Board 2 (secondary)
             for sid, p in showdown_players.items():
-                secondary_results[sid] = self.variant.evaluate_hand(p.hole_cards, table.board.secondary)
+                secondary_results[sid] = HandEvaluator.evaluate(
+                    p.hole_cards, table.board.secondary, self.rules
+                )
             winners_secondary = HandEvaluator.find_winners(secondary_results)
             self._distribute_pot(half_secondary, winners_secondary, table, winnings)
         else:

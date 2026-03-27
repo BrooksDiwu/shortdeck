@@ -10,6 +10,21 @@ export interface ChatMessage {
 }
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000'
+const DEAL_ANIMATION_TOTAL_MS = 1800
+const CARD_SOUND_INTERVAL_MS = 70
+
+function playCardBurst(play: (key: 'card_deal' | 'community_card') => void, key: 'card_deal' | 'community_card', count: number) {
+  if (count <= 0) return
+  for (let i = 0; i < count; i += 1) {
+    window.setTimeout(() => play(key), i * CARD_SOUND_INTERVAL_MS)
+  }
+}
+
+function pickPotSound(table: Table | null, amount: number): 'pot_collected_small' | 'pot_collected_large' {
+  if (!table || amount <= 0) return 'pot_collected_small'
+  const threshold = Math.max(table.rules.big_blind * 10, 100)
+  return amount >= threshold ? 'pot_collected_large' : 'pot_collected_small'
+}
 
 export type RabbitHuntCards = Card[]
 
@@ -59,6 +74,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     set({ connectionState: 'connecting', localPlayerId: playerId, holeCards: [], localSeq: 0, connectionError: null })
+    let dealAnimationToken = 0
 
     const ws = new WebSocket(`${WS_URL}/ws/table/${tableId}?token=${token}`)
 
@@ -118,13 +134,47 @@ export const useGameStore = create<GameState>((set, get) => ({
         ) as unknown as Table['players']
         const raw = msg as unknown as Record<string, unknown>
         const snapshot = { ...raw, players: playersMap, admin_id: raw.admin_id ?? '', player_join_order: raw.player_join_order ?? [] } as unknown as Table
+        const prevTable = get().table
+        const enteredNewPreflopHand =
+          !!prevTable &&
+          snapshot.phase === 'preflop' &&
+          snapshot.hand_number > prevTable.hand_number
+        if (enteredNewPreflopHand) {
+          const activeCount = Object.values(snapshot.players).filter(
+            (p) => p.status !== 'sitting_out' && p.status !== 'disconnected'
+          ).length
+          const totalDealtCards = activeCount * snapshot.rules.hole_cards_count
+          if (totalDealtCards > 0) {
+            const intervalMs = Math.max(
+              35,
+              Math.floor(DEAL_ANIMATION_TOTAL_MS / Math.max(totalDealtCards - 1, 1))
+            )
+            for (let i = 0; i < totalDealtCards; i += 1) {
+              window.setTimeout(() => sound.play('card_deal'), i * intervalMs)
+            }
+          }
+        }
         get().applySnapshot(snapshot, (msg as unknown as { seq: number }).seq)
         return
       }
 
       if (msg.type === 'deal') {
-        set({ holeCards: msg.hole_cards })
-        sound.play('card_deal')
+        dealAnimationToken += 1
+        const tokenForThisDeal = dealAnimationToken
+        const cards = msg.hole_cards ?? []
+        set({ holeCards: [] })
+        if (cards.length === 0) return
+
+        const intervalMs = Math.max(
+          120,
+          Math.floor(DEAL_ANIMATION_TOTAL_MS / Math.max(cards.length, 1))
+        )
+        cards.forEach((card, index) => {
+          window.setTimeout(() => {
+            if (tokenForThisDeal !== dealAnimationToken) return
+            set((state) => ({ holeCards: [...state.holeCards, card] }))
+          }, index * intervalMs)
+        })
         return
       }
 
@@ -207,8 +257,15 @@ export const useGameStore = create<GameState>((set, get) => ({
           sendMessage({ type: 'replay_request', from_seq: localSeq + 1 })
           return
         }
+        const beforeTable = get().table
+        const beforePrimaryCount = beforeTable?.board.primary.length ?? 0
+        const beforeSecondaryCount = beforeTable?.board.secondary.length ?? 0
+        const beforeFrontBets = beforeTable
+          ? Object.values(beforeTable.players).reduce((sum, p) => sum + p.current_bet, 0)
+          : 0
         console.log('[event] applying patch seq:', eventMsg.seq, 'event_type:', eventMsg.event_type, 'current_action_seat:', eventMsg.current_action_seat, 'state_patch:', JSON.stringify((eventMsg as Record<string,unknown>).state_patch))
         get().applyPatch(eventMsg)
+        const afterTable = get().table
         // Trigger sounds based on event sub-type
         const evType = eventMsg.event_type as string | undefined
         if (evType === 'card_revealed') {
@@ -234,10 +291,25 @@ export const useGameStore = create<GameState>((set, get) => ({
         }
         if (evType) {
           if (evType === 'action' && eventMsg.action === 'fold') sound.play('fold')
+          else if (evType === 'action' && eventMsg.action === 'check') sound.play('check')
           else if (evType === 'action' && eventMsg.action === 'all_in') sound.play('all_in')
-          else if (evType === 'action' && (eventMsg.action === 'raise' || eventMsg.action === 'call')) sound.play('chip_bet')
-          else if (evType === 'community_cards') sound.play('community_card')
-          else if (evType === 'hand_complete') sound.play('pot_collected_large')
+          else if (evType === 'action' && (eventMsg.action === 'raise' || eventMsg.action === 'call' || eventMsg.action === 'all_in')) sound.play('chip_bet')
+          else if (evType === 'community_cards') {
+            const afterPrimaryCount = afterTable?.board.primary.length ?? 0
+            const afterSecondaryCount = afterTable?.board.secondary.length ?? 0
+            const newCardCount = Math.max(
+              0,
+              (afterPrimaryCount + afterSecondaryCount) - (beforePrimaryCount + beforeSecondaryCount)
+            )
+            playCardBurst(sound.play, 'community_card', newCardCount)
+            if (beforeFrontBets > 0) {
+              sound.play(pickPotSound(beforeTable ?? null, beforeFrontBets))
+            }
+          } else if (evType === 'hand_complete') {
+            const winners = (eventMsg.winners as Record<string, number> | undefined) ?? {}
+            const awarded = Object.values(winners).reduce((sum, amount) => sum + amount, 0)
+            sound.play(pickPotSound(beforeTable ?? null, awarded))
+          }
           else if (evType === 'game_paused' || evType === 'vote_update') sound.play('vote_banner')
           else if (evType === 'vote_resolved') {
             const passed = eventMsg.passed as boolean

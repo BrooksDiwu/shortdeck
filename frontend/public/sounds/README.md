@@ -6,6 +6,7 @@ Place the following `.mp3` files in this directory to enable sounds:
 |---|---|
 | `card_deal.mp3` | Soft card slide — played when hole cards are dealt |
 | `community_card.mp3` | Heavier card flip — played when community cards are revealed |
+| `check_knock.mp3` | Light table knock — played when a player checks |
 | `chip_bet.mp3` | Single chip clink — played on bet/raise/call |
 | `pot_small.mp3` | Few chips clink — played on small pot collection |
 | `pot_large.mp3` | Chip cascade — played on large pot collection |
