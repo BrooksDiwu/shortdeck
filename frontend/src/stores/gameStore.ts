@@ -15,6 +15,7 @@ interface GameState {
   actionBarMode: ActionBarMode
   ws: WebSocket | null
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
+  connectionError: string | null
   voteResolution: { passed: boolean; newRules?: Table['rules'] } | null
 
   connect: (tableId: string, token: string, playerId: string) => void
@@ -36,6 +37,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   actionBarMode: 'bottom',
   ws: null,
   connectionState: 'disconnected',
+  connectionError: null,
   voteResolution: null,
 
   connect: (tableId: string, token: string, playerId: string) => {
@@ -44,7 +46,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       existing.close()
     }
 
-    set({ connectionState: 'connecting', localPlayerId: playerId, holeCards: [], localSeq: 0 })
+    set({ connectionState: 'connecting', localPlayerId: playerId, holeCards: [], localSeq: 0, connectionError: null })
 
     const ws = new WebSocket(`${WS_URL}/ws/table/${tableId}?token=${token}`)
 
@@ -52,8 +54,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       set({ connectionState: 'connected', ws })
     }
 
-    ws.onclose = () => {
-      set({ connectionState: 'disconnected', ws: null })
+    ws.onclose = (event: CloseEvent) => {
+      if (event.code === 4003) {
+        set({ connectionState: 'error', connectionError: event.reason || 'Name already taken by a connected player', ws: null })
+      } else {
+        set({ connectionState: 'disconnected', connectionError: null, ws: null })
+      }
     }
 
     ws.onerror = () => {
@@ -94,44 +100,6 @@ export const useGameStore = create<GameState>((set, get) => ({
 
       if (msg.type === 'rabbit_hunt') {
         set({ rabbitHuntCards: msg.cards })
-        return
-      }
-
-      if (msg.type === 'game_paused') {
-        set((state) => state.table ? { table: { ...state.table, is_paused: true } } : {})
-        return
-      }
-
-      if (msg.type === 'game_unpaused') {
-        set((state) => state.table ? { table: { ...state.table, is_paused: false } } : {})
-        return
-      }
-
-      if (msg.type === 'vote_update') {
-        set((state) => {
-          if (!state.table?.pending_vote) return {}
-          return {
-            table: {
-              ...state.table,
-              pending_vote: {
-                ...state.table.pending_vote,
-                votes_for: Array(msg.votes_for).fill(''),
-                votes_against: Array(msg.votes_against).fill(''),
-              },
-            },
-          }
-        })
-        sound.play('vote_banner')
-        return
-      }
-
-      if (msg.type === 'vote_resolved') {
-        set({ voteResolution: { passed: msg.passed, newRules: msg.new_rules } })
-        if (msg.passed && msg.new_rules) {
-          set((state) => state.table ? { table: { ...state.table, rules: msg.new_rules!, pending_vote: null } } : {})
-        } else {
-          set((state) => state.table ? { table: { ...state.table, pending_vote: null } } : {})
-        }
         return
       }
 
@@ -213,12 +181,39 @@ export const useGameStore = create<GameState>((set, get) => ({
         get().applyPatch(eventMsg)
         // Trigger sounds based on event sub-type
         const evType = eventMsg.event_type as string | undefined
+        if (evType === 'card_revealed') {
+          const revealMsg = eventMsg as unknown as { session_id: string; card_index: number; card: Record<string, unknown> }
+          set((state) => {
+            if (!state.table) return {}
+            const player = state.table.players[revealMsg.session_id]
+            if (!player) return {}
+            const newRevealed = [...(player.is_revealed ?? [])]
+            newRevealed[revealMsg.card_index] = true
+            const newHoleCards = [...(player.hole_cards ?? [])]
+            newHoleCards[revealMsg.card_index] = revealMsg.card as unknown as Card
+            return {
+              table: {
+                ...state.table,
+                players: {
+                  ...state.table.players,
+                  [revealMsg.session_id]: { ...player, is_revealed: newRevealed, hole_cards: newHoleCards },
+                },
+              },
+            }
+          })
+        }
         if (evType) {
           if (evType === 'action' && eventMsg.action === 'fold') sound.play('fold')
           else if (evType === 'action' && eventMsg.action === 'all_in') sound.play('all_in')
           else if (evType === 'action' && (eventMsg.action === 'raise' || eventMsg.action === 'call')) sound.play('chip_bet')
           else if (evType === 'community_cards') sound.play('community_card')
           else if (evType === 'hand_complete') sound.play('pot_collected_large')
+          else if (evType === 'game_paused' || evType === 'vote_update') sound.play('vote_banner')
+          else if (evType === 'vote_resolved') {
+            const passed = eventMsg.passed as boolean
+            const newRules = eventMsg.new_rules as Table['rules'] | undefined
+            set({ voteResolution: { passed, newRules } })
+          }
         }
         const currentSeat = get().table?.current_action_seat
         const localPlayer = get().table && get().localPlayerId
@@ -245,6 +240,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     set((state) => {
       if (!state.table) return {}
       const seq = event.seq as number
+      const evType = event.event_type as string | undefined
 
       // Backend nests table fields under state_patch — flatten into event
       const patch = typeof event.state_patch === 'object' && event.state_patch !== null
@@ -268,6 +264,23 @@ export const useGameStore = create<GameState>((set, get) => ({
       if ('pending_sit_requests' in patch) tableUpdates.pending_sit_requests = patch.pending_sit_requests as Table['pending_sit_requests']
       if ('player_join_order' in patch) tableUpdates.player_join_order = patch.player_join_order as string[]
       if ('admin_id' in patch) tableUpdates.admin_id = patch.admin_id as string
+
+      // Handle event_type-implied state changes not present as explicit fields
+      if (evType === 'game_paused') {
+        tableUpdates.is_paused = true
+        tableUpdates.pause_requested_by = patch.requested_by as string | null ?? null
+      } else if (evType === 'game_unpaused') {
+        tableUpdates.is_paused = false
+        tableUpdates.pause_requested_by = null
+      } else if (evType === 'vote_resolved') {
+        const passed = patch.passed as boolean
+        if (passed && patch.new_rules) {
+          tableUpdates.rules = patch.new_rules as Table['rules']
+        }
+        tableUpdates.pending_vote = null
+        tableUpdates.is_paused = false
+        tableUpdates.pause_requested_by = null
+      }
 
       // Player updates
       let newPlayers = { ...state.table.players }

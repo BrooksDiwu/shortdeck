@@ -96,6 +96,8 @@ export type ClientMessage =
   | { type: 'approve_sit_down'; session_id: string }
   | { type: 'reject_sit_down'; session_id: string }
   | { type: 'stand_up' }
+  | { type: 'sit_out' }
+  | { type: 'sit_in' }
   | { type: 'host_stand_up'; session_id: string }
   | { type: 'host_remove_player'; session_id: string }
   | { type: 'replay_request'; from_seq: number }

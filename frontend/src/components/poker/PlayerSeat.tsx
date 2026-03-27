@@ -9,14 +9,28 @@ interface PlayerSeatProps {
   holeCards: Card[];
   dealerSeat: number;
   rules: TableRulesSchema;
+  phase: string;
   position: { top?: string; left?: string };
+  onRevealCard?: (cardIndex: number) => void;
+  pendingSitOut?: boolean;
 }
 
-const PlayerSeat = ({ player, isLocal, holeCards, dealerSeat, rules, position }: PlayerSeatProps) => {
+const HAND_PHASES = new Set(["preflop", "flop", "turn", "river", "showdown"]);
+
+const PlayerSeat = ({ player, isLocal, holeCards, dealerSeat, rules, phase, position, onRevealCard, pendingSitOut }: PlayerSeatProps) => {
   const folded = player.status === "folded";
   const isDealer = player.seat === dealerSeat;
+  // For local player use dealt holeCards; for others use server-sent hole_cards (populated at showdown/reveal)
   const cards = isLocal ? holeCards : player.hole_cards;
-  const hasCards = cards && cards.length > 0;
+  const isInHand = HAND_PHASES.has(phase) && player.status !== "sitting_out";
+  // Show card area if local player has cards, or if other player is in an active hand (show backs)
+  const hasCards = isLocal ? cards.length > 0 : isInHand;
+
+  const handleCardClick = (i: number) => {
+    if (!isLocal || !onRevealCard) return;
+    if (player.is_revealed?.[i]) return; // already revealed
+    onRevealCard(i);
+  };
 
   return (
     <div
@@ -51,6 +65,11 @@ const PlayerSeat = ({ player, isLocal, holeCards, dealerSeat, rules, position }:
             AI
           </span>
         )}
+        {(player.status === "sitting_out" || pendingSitOut) && (
+          <span className="absolute -bottom-1 -left-1 bg-zinc-600 text-zinc-200 text-[7px] rounded-full px-1 font-bold whitespace-nowrap">
+            {pendingSitOut && player.status !== "sitting_out" ? "OUT↓" : "OUT"}
+          </span>
+        )}
       </div>
 
       {/* Name & stack */}
@@ -64,28 +83,65 @@ const PlayerSeat = ({ player, isLocal, holeCards, dealerSeat, rules, position }:
       {/* Cards */}
       {hasCards && !folded && (
         <div className={cn("flex mt-0.5", isLocal ? "gap-1.5" : "gap-0.5")}>
-          {(isLocal ? holeCards : [null, null]).map((card, i) => {
-            if (isLocal && card) {
+          {Array.from({ length: rules.hole_cards_count }).map((_, i) => {
+            if (isLocal) {
+              const card = holeCards[i];
+              if (!card) return null;
               const label = getCardLabel(card);
               const color = getSuitColor(card.suit);
+              const alreadyRevealed = player.is_revealed?.[i];
+              const canReveal = !!onRevealCard && !alreadyRevealed;
               return (
                 <div
                   key={i}
-                  className="w-14 h-20 rounded-lg bg-foreground shadow-lg flex items-center justify-center text-lg font-bold"
+                  onClick={() => handleCardClick(i)}
+                  className={cn(
+                    "w-14 h-20 rounded-lg bg-foreground shadow-lg flex items-center justify-center text-lg font-bold relative",
+                    canReveal && "cursor-pointer hover:ring-2 hover:ring-primary active:scale-95 transition-transform"
+                  )}
+                  style={{ color }}
+                >
+                  {label}
+                  {alreadyRevealed && (
+                    <span className="absolute top-0.5 right-0.5 text-[7px] text-primary font-bold leading-none">
+                      SHOWN
+                    </span>
+                  )}
+                </div>
+              );
+            }
+
+            // Other players
+            const otherCard = player.hole_cards?.[i];
+            const isRevealed = player.is_revealed?.[i];
+            if (isRevealed && otherCard) {
+              // Voluntarily revealed or showdown — show face
+              const label = getCardLabel(otherCard);
+              const color = getSuitColor(otherCard.suit);
+              return (
+                <div
+                  key={i}
+                  className="w-5 h-7 rounded text-[8px] bg-foreground shadow flex items-center justify-center font-bold"
                   style={{ color }}
                 >
                   {label}
                 </div>
               );
             }
+            // Face-down card back
             return (
-              <div key={i} className="w-4 h-6 rounded text-[6px] bg-chip-red/80 text-foreground flex items-center justify-center font-bold">
-                ?
-              </div>
+              <div
+                key={i}
+                className="w-5 h-7 rounded bg-blue-900 border border-blue-400/30 shadow flex items-center justify-center"
+                style={{
+                  backgroundImage: "repeating-linear-gradient(45deg, #1e3a8a 0px, #1e3a8a 2px, transparent 2px, transparent 6px)",
+                }}
+              />
             );
           })}
         </div>
       )}
+
     </div>
   );
 };

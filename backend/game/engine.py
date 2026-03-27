@@ -95,13 +95,23 @@ class GameEngine:
             if p.status in ("active", "all_in")
         }
 
+        winnings: dict[str, int] = {sid: 0 for sid in table.players}
+
+        # If only one player remains (everyone else folded), award pot without evaluation
+        if len(showdown_players) == 1:
+            winner_sid = next(iter(showdown_players))
+            self._distribute_pot(table.pot, [winner_sid], table, winnings)
+            for sid, amount in winnings.items():
+                if amount > 0:
+                    table.players[sid].stack += amount
+            table.action_seq += 1
+            return winnings
+
         # Evaluate hands
         player_results = {}
         for sid, p in showdown_players.items():
             result = HandEvaluator.evaluate(p.hole_cards, table.board.primary, self.rules)
             player_results[sid] = result
-
-        winnings: dict[str, int] = {sid: 0 for sid in table.players}
 
         # If extra_flop: split pot between two boards
         if self.rules.extra_flop and table.board.secondary:

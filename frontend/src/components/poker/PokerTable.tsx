@@ -1,7 +1,10 @@
+import { useState } from "react";
 import PlayerSeat from "./PlayerSeat";
 import Toolbar from "./Toolbar";
 import ActionBar from "./ActionBar";
 import ChatBubble from "./ChatBubble";
+import Modal from "@/components/Modal";
+import { useGameStore } from "@/stores/gameStore";
 import { getCardLabel, getSuitColor, formatAmount } from "@/utils/gameUtils";
 import type { Table, Card } from "@/types";
 
@@ -26,19 +29,49 @@ interface PokerTableProps {
   onMenuOpen: () => void;
   onSitDown: (seat: number) => void;
   onStartHand: () => void;
+  pendingSitOut: boolean;
 }
 
-const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, onStartHand }: PokerTableProps) => {
+const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, onStartHand, pendingSitOut }: PokerTableProps) => {
+  const sendMessage = useGameStore((s) => s.sendMessage);
+  const rabbitHuntCards = useGameStore((s) => s.rabbitHuntCards);
+  const clearRabbitHunt = useGameStore((s) => s.clearRabbitHunt);
+  const [confirmRevealIndex, setConfirmRevealIndex] = useState<number | null>(null);
+
   const players = Object.values(table.players).sort((a, b) => a.seat - b.seat);
   const localPlayer = players.find((p) => p.session_id === localPlayerId) ?? null;
 
   const board = table.board.primary;
+  const secondaryBoard = table.board.secondary;
+  const hasDoubleBoard = table.rules.extra_flop && secondaryBoard.length > 0;
   const pot = table.pot;
-  const isAdmin = localPlayerId === table.admin_id;
-  const canStart = isAdmin && (table.phase === "waiting" || table.phase === "between_hands");
+  const isSeated = localPlayer !== null;
+  const canStart = isSeated && (table.phase === "waiting" || table.phase === "between_hands");
   const activePlayers = Object.values(table.players).filter(
     (p) => p.status !== "sitting_out" && p.status !== "disconnected"
   );
+
+  // Rabbit hunt is available when hand is over and fewer than 5 community cards were dealt
+  const canRabbitHunt = isSeated &&
+    (table.phase === "showdown" || table.phase === "between_hands") &&
+    board.length < 5 &&
+    rabbitHuntCards.length === 0;  // hide button once cards are fetched
+
+  const handleRabbitHunt = () => {
+    sendMessage({ type: "rabbit_hunt_request" });
+  };
+
+
+  const handleRevealCard = (cardIndex: number) => {
+    setConfirmRevealIndex(cardIndex);
+  };
+
+  const handleConfirmReveal = () => {
+    if (confirmRevealIndex !== null) {
+      sendMessage({ type: "reveal_card", card_index: confirmRevealIndex as 0 | 1 });
+    }
+    setConfirmRevealIndex(null);
+  };
 
   return (
     <div className="w-full max-w-[430px] mx-auto h-[100dvh] flex flex-col bg-felt-dark overflow-hidden">
@@ -50,7 +83,7 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
         <div className="absolute inset-x-4 top-4 bottom-4 rounded-[45%/50%] bg-felt border-4 border-gold-dim/40 shadow-[inset_0_0_60px_rgba(0,0,0,0.4)]" />
 
         {/* Pot */}
-        <div className="absolute top-[38%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
+        <div className={`absolute ${hasDoubleBoard ? "top-[30%]" : "top-[38%]"} left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center`}>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Pot</div>
           <div className="text-lg font-bold text-primary">
             {formatAmount(pot, table.rules.denomination)}
@@ -59,27 +92,96 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
 
         {/* Community cards */}
         {board.length > 0 && (
-          <div className="absolute top-[46%] left-1/2 -translate-x-1/2 -translate-y-1/2 flex gap-1.5">
-            {board.map((card, i) => {
-              const label = getCardLabel(card);
-              const color = getSuitColor(card.suit);
-              return (
-                <div
-                  key={i}
-                  className="w-10 h-14 rounded-lg bg-foreground shadow-xl flex items-center justify-center text-sm font-bold"
-                  style={{ color }}
-                >
-                  {label}
+          <div className={`absolute ${hasDoubleBoard ? "top-[43%]" : "top-[46%]"} left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1.5`}>
+            {/* Board label when double boards are active */}
+            {hasDoubleBoard && (
+              <div className="text-[9px] text-amber-400/70 uppercase tracking-widest font-semibold">Board 1</div>
+            )}
+            <div className="flex gap-1.5">
+              {board.map((card, i) => {
+                const label = getCardLabel(card);
+                const color = getSuitColor(card.suit);
+                return (
+                  <div
+                    key={i}
+                    className="w-10 h-14 rounded-lg bg-foreground shadow-xl flex items-center justify-center text-sm font-bold"
+                    style={{ color }}
+                  >
+                    {label}
+                  </div>
+                );
+              })}
+              {/* Remaining slots: show rabbit hunt cards or ghost placeholders */}
+              {Array.from({ length: 5 - board.length }).map((_, i) => {
+                const rabbitCard = rabbitHuntCards[i];
+                if (rabbitCard) {
+                  const label = getCardLabel(rabbitCard);
+                  const color = getSuitColor(rabbitCard.suit);
+                  return (
+                    <div
+                      key={`rabbit-${i}`}
+                      className="w-10 h-14 rounded-lg bg-foreground/60 shadow-xl flex items-center justify-center text-sm font-bold ring-2 ring-amber-400/70"
+                      style={{ color }}
+                    >
+                      {label}
+                    </div>
+                  );
+                }
+                return (
+                  <div
+                    key={`ghost-${i}`}
+                    className="w-10 h-14 rounded-lg border border-border/30 opacity-20"
+                  />
+                );
+              })}
+            </div>
+
+            {/* Secondary board (double board mode) */}
+            {hasDoubleBoard && (
+              <>
+                <div className="text-[9px] text-amber-400/70 uppercase tracking-widest font-semibold mt-0.5">Board 2</div>
+                <div className="flex gap-1.5">
+                  {secondaryBoard.map((card, i) => {
+                    const label = getCardLabel(card);
+                    const color = getSuitColor(card.suit);
+                    return (
+                      <div
+                        key={i}
+                        className="w-10 h-14 rounded-lg bg-foreground shadow-xl flex items-center justify-center text-sm font-bold ring-1 ring-amber-400/40"
+                        style={{ color }}
+                      >
+                        {label}
+                      </div>
+                    );
+                  })}
+                  {/* Ghost placeholders for secondary board's remaining turn/river slots */}
+                  {Array.from({ length: 5 - secondaryBoard.length }).map((_, i) => (
+                    <div
+                      key={`ghost-secondary-${i}`}
+                      className="w-10 h-14 rounded-lg border border-border/30 opacity-20"
+                    />
+                  ))}
                 </div>
-              );
-            })}
-            {/* Ghost placeholders for remaining board cards */}
-            {Array.from({ length: 5 - board.length }).map((_, i) => (
-              <div
-                key={`ghost-${i}`}
-                className="w-10 h-14 rounded-lg border border-border/30 opacity-20"
-              />
-            ))}
+              </>
+            )}
+
+            {/* Rabbit hunt button / dismiss */}
+            {canRabbitHunt && (
+              <button
+                onClick={handleRabbitHunt}
+                className="mt-1 px-3 py-1 rounded-full bg-amber-600/80 text-white text-[10px] font-semibold hover:bg-amber-500 active:scale-95 transition-all shadow"
+              >
+                🐇 Rabbit Hunt
+              </button>
+            )}
+            {rabbitHuntCards.length > 0 && (
+              <button
+                onClick={clearRabbitHunt}
+                className="mt-1 px-3 py-1 rounded-full bg-zinc-700/80 text-zinc-300 text-[10px] font-semibold hover:bg-zinc-600 active:scale-95 transition-all shadow"
+              >
+                Hide
+              </button>
+            )}
           </div>
         )}
 
@@ -112,7 +214,10 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
               holeCards={player.session_id === localPlayerId ? holeCards : []}
               dealerSeat={table.dealer_seat}
               rules={table.rules}
+              phase={table.phase}
               position={PORTRAIT_POSITIONS[posIdx] ?? PORTRAIT_POSITIONS[0]}
+              onRevealCard={player.session_id === localPlayerId ? handleRevealCard : undefined}
+              pendingSitOut={player.session_id === localPlayerId ? pendingSitOut : false}
             />
           );
         })}
@@ -146,6 +251,33 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
       {localPlayer && (
         <ActionBar table={table} localPlayer={localPlayer} />
       )}
+
+      {/* Reveal card confirmation — rendered here (outside transformed elements) so fixed positioning works */}
+      <Modal
+        open={confirmRevealIndex !== null}
+        onClose={() => setConfirmRevealIndex(null)}
+        title="Show Card?"
+        showClose
+      >
+        <p className="text-sm text-zinc-300 mb-4">
+          Show card {confirmRevealIndex === 0 ? "1" : "2"} to all players? This cannot be undone.
+        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={() => setConfirmRevealIndex(null)}
+            className="flex-1 py-2 rounded-lg text-sm font-semibold bg-zinc-700 text-zinc-200 hover:bg-zinc-600 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirmReveal}
+            className="flex-1 py-2 rounded-lg text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            Show Card
+          </button>
+        </div>
+      </Modal>
+
     </div>
   );
 };

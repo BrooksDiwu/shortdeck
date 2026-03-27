@@ -188,17 +188,126 @@ async def websocket_endpoint(
         await websocket.close(code=4004, reason="Table not found")
         return
 
-    # 2. Accept connection
+    # 2. Resolve name uniqueness: check if a player with this name already exists in the table.
+    # We do this before accepting the connection so we can reject cleanly.
+    session_service = SessionService()
+    try:
+        connecting_player = await session_service.get_session(session_id)
+        connecting_name = connecting_player.name
+    except Exception:
+        await websocket.close(code=4001, reason="Session not found")
+        return
+
+    # Find any seated player with the same name (case-insensitive)
+    name_collision_id: str | None = None
+    for pid, p in table.players.items():
+        if p.name.lower() == connecting_name.lower() and pid != session_id:
+            name_collision_id = pid
+            break
+
+    if name_collision_id is not None:
+        colliding_player = table.players[name_collision_id]
+        if colliding_player.status != "disconnected" and manager.is_connected(table_id, name_collision_id):
+            # Name is taken by an active player — accept then immediately close so the
+            # browser receives the close frame with our custom code and reason.
+            await websocket.accept()
+            await websocket.close(
+                code=4003,
+                reason=f"Name '{connecting_name}' is already taken by a connected player",
+            )
+            return
+        # Disconnected player with same name: this connection takes over that slot.
+        # We remap the session_id inside the table state.
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+            # Re-check after acquiring lock
+            if name_collision_id in table.players:
+                old_player = table.players.pop(name_collision_id)
+                old_player.session_id = session_id
+                old_player.status = "active"
+                old_player.disconnect_at = None
+                table.players[session_id] = old_player
+
+                # Update join order
+                if name_collision_id in table.player_join_order:
+                    idx = table.player_join_order.index(name_collision_id)
+                    table.player_join_order[idx] = session_id
+
+                # Transfer admin rights if needed
+                if table.admin_id == name_collision_id:
+                    table.admin_id = session_id
+                    old_player.is_admin = True
+
+                # Cancel grace timer for old session
+                old_timer_key = (table_id, name_collision_id)
+                old_timer_task = _grace_timers.pop(old_timer_key, None)
+                if old_timer_task is not None:
+                    old_timer_task.cancel()
+
+                # Remove old session from spectators if present
+                if name_collision_id in table.spectators:
+                    table.spectators.remove(name_collision_id)
+
+                table.action_seq += 1
+                await table_service.save_table(table)
+        # table now reflects the remapped state
+
+        # Accept and continue as the remapped session_id
+        await manager.connect(table_id, session_id, websocket)
+
+        # Send full state snapshot and hole cards (reconnect path)
+        await manager.send_personal(table_id, session_id, _build_state_snapshot(table, session_id))
+        if table.phase not in ("waiting", "between_hands") and session_id in table.players:
+            player = table.players[session_id]
+            if player.hole_cards:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "deal",
+                    "seq": table.action_seq,
+                    "hand": table.hand_number,
+                    "hole_cards": [c.to_dict() for c in player.hole_cards],
+                })
+
+        pubsub_task = asyncio.create_task(
+            _subscribe_redis_events(table_id, session_id, websocket, table_service)
+        )
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    await manager.send_personal(table_id, session_id, {
+                        "type": "error",
+                        "code": "INVALID_JSON",
+                        "message": "Message must be valid JSON",
+                    })
+                    continue
+                await _dispatch_message(table_id, session_id, msg, table_service)
+        except WebSocketDisconnect:
+            logger.info(f"Player {session_id} (name-takeover) disconnected from table {table_id}")
+        except Exception as exc:
+            logger.exception(f"WebSocket error for {session_id} at table {table_id}: {exc}")
+        finally:
+            pubsub_task.cancel()
+            manager.disconnect(table_id, session_id)
+            await _handle_disconnect(table_id, session_id, table_service)
+        return
+
+    # 3. Accept connection
     await manager.connect(table_id, session_id, websocket)
 
-    # 3. Update player connection status
+    # 4. Update player connection status
+    reconnect_broadcast = None
     async with table_service.acquire_lock(table_id):
         table = await table_service.get_table(table_id)
         changed = False
         if session_id in table.players:
             player = table.players[session_id]
             if player.status == "disconnected":
-                player.status = "active"
+                # Mid-hand: restore to active so they can continue playing.
+                # Between hands: sit them out so they must explicitly opt back in.
+                new_status = "active" if table.phase not in ("waiting", "between_hands") else "sitting_out"
+                player.status = new_status
                 player.disconnect_at = None
                 timer_key = (table_id, session_id)
                 timer_task = _grace_timers.pop(timer_key, None)
@@ -206,6 +315,11 @@ async def websocket_endpoint(
                     timer_task.cancel()
                     logger.info(f"Cancelled grace timer for reconnected player {session_id} at table {table_id}")
                 changed = True
+                table.action_seq += 1
+                reconnect_broadcast = _build_event_message(
+                    table, "player_reconnected", session_id,
+                    players={session_id: {"status": new_status}},
+                )
             if session_id in table.spectators:
                 table.spectators.remove(session_id)
                 changed = True
@@ -216,6 +330,8 @@ async def websocket_endpoint(
                     changed = True
         if changed:
             await table_service.save_table(table)
+    if reconnect_broadcast is not None:
+        await table_service.publish_event(table_id, reconnect_broadcast)
 
     # 4. Send full state snapshot
     await manager.send_personal(table_id, session_id, _build_state_snapshot(table, session_id))
@@ -248,64 +364,7 @@ async def websocket_endpoint(
                     "message": "Message must be valid JSON",
                 })
                 continue
-
-            msg_type = msg.get("type")
-
-            if msg_type == "action":
-                await _handle_action(table_id, session_id, msg, table_service)
-
-            elif msg_type == "vote":
-                await _handle_vote(table_id, session_id, msg, table_service)
-
-            elif msg_type == "replay_request":
-                from_seq = msg.get("from_seq", 0)
-                await _handle_replay(table_id, session_id, from_seq, table_service)
-
-            elif msg_type == "propose_rule_change":
-                await _handle_propose_rule_change(table_id, session_id, msg, table_service)
-
-            elif msg_type == "force_rule_change":
-                await _handle_force_rule_change(table_id, session_id, msg, table_service)
-
-            elif msg_type == "pause_request":
-                await _handle_pause_request(table_id, session_id, msg, table_service)
-
-            elif msg_type == "unpause_request":
-                await _handle_unpause_request(table_id, session_id, msg, table_service)
-
-            elif msg_type == "reveal_card":
-                await _handle_reveal_card(table_id, session_id, msg, table_service)
-
-            elif msg_type == "rabbit_hunt_request":
-                await _handle_rabbit_hunt_request(table_id, session_id, msg, table_service)
-
-            elif msg_type == "sit_down_request":
-                await _handle_sit_down_request(table_id, session_id, msg, table_service)
-
-            elif msg_type == "approve_sit_down":
-                await _handle_approve_sit_down(table_id, session_id, msg, table_service)
-
-            elif msg_type == "reject_sit_down":
-                await _handle_reject_sit_down(table_id, session_id, msg, table_service)
-
-            elif msg_type == "stand_up":
-                await _handle_stand_up(table_id, session_id, msg, table_service)
-
-            elif msg_type == "host_stand_up":
-                await _handle_host_stand_up(table_id, session_id, msg, table_service)
-
-            elif msg_type == "host_remove_player":
-                await _handle_host_remove_player(table_id, session_id, msg, table_service)
-
-            elif msg_type == "start_hand":
-                await _handle_start_hand(table_id, session_id, table_service)
-
-            else:
-                await manager.send_personal(table_id, session_id, {
-                    "type": "error",
-                    "code": "UNKNOWN_MESSAGE_TYPE",
-                    "message": f"Unknown message type: {msg_type}",
-                })
+            await _dispatch_message(table_id, session_id, msg, table_service)
 
     except WebSocketDisconnect:
         logger.info(f"Player {session_id} disconnected from table {table_id}")
@@ -340,6 +399,60 @@ async def _subscribe_redis_events(
         pass
     except Exception as exc:
         logger.exception(f"Pub/sub subscription error: {exc}")
+async def _dispatch_message(
+    table_id: str,
+    session_id: str,
+    msg: dict,
+    table_service: TableService,
+) -> None:
+    """Route an incoming WebSocket message to the appropriate handler."""
+    msg_type = msg.get("type")
+
+    if msg_type == "action":
+        await _handle_action(table_id, session_id, msg, table_service)
+    elif msg_type == "vote":
+        await _handle_vote(table_id, session_id, msg, table_service)
+    elif msg_type == "replay_request":
+        from_seq = msg.get("from_seq", 0)
+        await _handle_replay(table_id, session_id, from_seq, table_service)
+    elif msg_type == "propose_rule_change":
+        await _handle_propose_rule_change(table_id, session_id, msg, table_service)
+    elif msg_type == "force_rule_change":
+        await _handle_force_rule_change(table_id, session_id, msg, table_service)
+    elif msg_type == "pause_request":
+        await _handle_pause_request(table_id, session_id, msg, table_service)
+    elif msg_type == "unpause_request":
+        await _handle_unpause_request(table_id, session_id, msg, table_service)
+    elif msg_type == "reveal_card":
+        await _handle_reveal_card(table_id, session_id, msg, table_service)
+    elif msg_type == "rabbit_hunt_request":
+        await _handle_rabbit_hunt_request(table_id, session_id, msg, table_service)
+    elif msg_type == "sit_down_request":
+        await _handle_sit_down_request(table_id, session_id, msg, table_service)
+    elif msg_type == "approve_sit_down":
+        await _handle_approve_sit_down(table_id, session_id, msg, table_service)
+    elif msg_type == "reject_sit_down":
+        await _handle_reject_sit_down(table_id, session_id, msg, table_service)
+    elif msg_type == "stand_up":
+        await _handle_stand_up(table_id, session_id, msg, table_service)
+    elif msg_type == "sit_out":
+        await _handle_sit_out(table_id, session_id, table_service)
+    elif msg_type == "sit_in":
+        await _handle_sit_in(table_id, session_id, table_service)
+    elif msg_type == "host_stand_up":
+        await _handle_host_stand_up(table_id, session_id, msg, table_service)
+    elif msg_type == "host_remove_player":
+        await _handle_host_remove_player(table_id, session_id, msg, table_service)
+    elif msg_type == "start_hand":
+        await _handle_start_hand(table_id, session_id, table_service)
+    else:
+        await manager.send_personal(table_id, session_id, {
+            "type": "error",
+            "code": "UNKNOWN_MESSAGE_TYPE",
+            "message": f"Unknown message type: {msg_type}",
+        })
+
+
 async def _handle_action(
     table_id: str,
     session_id: str,
@@ -448,11 +561,11 @@ async def _handle_start_hand(
         async with table_service.acquire_lock(table_id):
             table = await table_service.get_table(table_id)
 
-            if table.admin_id != session_id:
+            if session_id not in table.players:
                 await manager.send_personal(table_id, session_id, {
                     "type": "error",
-                    "code": "NOT_ADMIN",
-                    "message": "Only the admin can start a hand",
+                    "code": "NOT_SEATED",
+                    "message": "Only seated players can start a hand",
                 })
                 return
 
@@ -521,6 +634,11 @@ def _is_betting_round_complete(table) -> bool:
     The round is done when bets are all equal AND the next player to act is the
     last aggressor (meaning action has gone all the way around back to them).
     """
+    # If only one non-folded player remains, hand is over immediately
+    non_folded = [p for p in table.players.values() if p.status in ("active", "all_in")]
+    if len(non_folded) <= 1:
+        return True
+
     active = [p for p in table.players.values() if p.status == "active"]
     if not active:
         return True
@@ -701,7 +819,6 @@ async def _handle_vote(
                 table.is_paused = False
                 table.pause_requested_by = None
                 table.pending_vote = None
-                table.action_seq += 1
                 await table_service.save_table(table)
 
                 vote_resolved_msg = _build_event_message(
@@ -709,10 +826,8 @@ async def _handle_vote(
                     passed=passed,
                     new_rules=table.rules.to_dict() if passed else None,
                 )
+                await table_service.append_event(table_id, vote_resolved_msg)
                 await table_service.publish_event(table_id, vote_resolved_msg)
-
-                unpause_msg = _build_event_message(table, "game_unpaused", session_id)
-                await table_service.publish_event(table_id, unpause_msg)
             else:
                 await table_service.save_table(table)
 
@@ -721,7 +836,9 @@ async def _handle_vote(
                     votes_for=len(table.pending_vote.votes_for),
                     votes_against=len(table.pending_vote.votes_against),
                     total_eligible=seated_count,
+                    pending_vote=table.pending_vote.to_dict(),
                 )
+                await table_service.append_event(table_id, vote_update_msg)
                 await table_service.publish_event(table_id, vote_update_msg)
 
     except HTTPException:
@@ -875,20 +992,17 @@ async def _handle_propose_rule_change(
 
             await table_service.save_table(table)
 
+            seated_count = len([p for p in table.players.values() if p.status not in ("sitting_out", "disconnected")])
             paused_msg = _build_event_message(
                 table, "game_paused", session_id,
                 requested_by=session_id,
-            )
-            await table_service.publish_event(table_id, paused_msg)
-
-            seated_count = len([p for p in table.players.values() if p.status not in ("sitting_out", "disconnected")])
-            vote_msg = _build_event_message(
-                table, "vote_update", session_id,
+                pending_vote=vote.to_dict(),
                 votes_for=len(vote.votes_for),
                 votes_against=len(vote.votes_against),
                 total_eligible=seated_count,
             )
-            await table_service.publish_event(table_id, vote_msg)
+            await table_service.append_event(table_id, paused_msg)
+            await table_service.publish_event(table_id, paused_msg)
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {
@@ -942,12 +1056,8 @@ async def _handle_force_rule_change(
                 passed=True,
                 new_rules=new_rules.to_dict(),
             )
+            await table_service.append_event(table_id, resolved_msg)
             await table_service.publish_event(table_id, resolved_msg)
-
-            unpause_msg = _build_event_message(
-                table, "game_unpaused", session_id,
-            )
-            await table_service.publish_event(table_id, unpause_msg)
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {
@@ -1453,11 +1563,12 @@ async def _handle_stand_up(
                 })
                 return
 
-            if table.phase not in ("waiting", "between_hands"):
+            player = table.players[session_id]
+            if player.status != "sitting_out":
                 await manager.send_personal(table_id, session_id, {
                     "type": "error",
-                    "code": "CANNOT_STAND_MID_HAND",
-                    "message": "Cannot stand up during an active hand",
+                    "code": "MUST_SIT_OUT_FIRST",
+                    "message": "You must sit out before standing up",
                 })
                 return
 
@@ -1477,6 +1588,95 @@ async def _handle_stand_up(
                 removed_players=[session_id],
                 player_join_order=table.player_join_order,
                 spectators=table.spectators,
+            )
+            await table_service.publish_event(table_id, broadcast_msg)
+
+    except HTTPException:
+        await manager.send_personal(table_id, session_id, {
+            "type": "error",
+            "code": "LOCK_CONFLICT",
+            "message": "Action in progress, please retry",
+        })
+
+
+async def _handle_sit_out(
+    table_id: str,
+    session_id: str,
+    table_service: TableService,
+) -> None:
+    """Mark a seated player as sitting_out so they are skipped next hand."""
+    try:
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+
+            if session_id not in table.players:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "NOT_AT_TABLE",
+                    "message": "You are not seated at this table",
+                })
+                return
+
+            player = table.players[session_id]
+            if player.status == "sitting_out":
+                return  # already sitting out
+
+            # Don't allow sit_out if currently in an active hand (folding out mid-hand is not sit-out)
+            if player.status in ("active", "all_in") and table.phase not in ("waiting", "between_hands"):
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "CANNOT_SIT_OUT_MID_HAND",
+                    "message": "Cannot sit out during an active hand",
+                })
+                return
+
+            player.status = "sitting_out"
+            table.action_seq += 1
+            await table_service.save_table(table)
+
+            broadcast_msg = _build_event_message(
+                table, "player_sit_out", session_id,
+                players={session_id: {"status": "sitting_out"}},
+            )
+            await table_service.publish_event(table_id, broadcast_msg)
+
+    except HTTPException:
+        await manager.send_personal(table_id, session_id, {
+            "type": "error",
+            "code": "LOCK_CONFLICT",
+            "message": "Action in progress, please retry",
+        })
+
+
+async def _handle_sit_in(
+    table_id: str,
+    session_id: str,
+    table_service: TableService,
+) -> None:
+    """Return a sitting_out player to active so they are dealt in next hand."""
+    try:
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+
+            if session_id not in table.players:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "NOT_AT_TABLE",
+                    "message": "You are not seated at this table",
+                })
+                return
+
+            player = table.players[session_id]
+            if player.status != "sitting_out":
+                return  # already active
+
+            player.status = "active"
+            table.action_seq += 1
+            await table_service.save_table(table)
+
+            broadcast_msg = _build_event_message(
+                table, "player_sit_in", session_id,
+                players={session_id: {"status": "active"}},
             )
             await table_service.publish_event(table_id, broadcast_msg)
 

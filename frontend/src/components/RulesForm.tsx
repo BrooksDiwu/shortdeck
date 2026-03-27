@@ -59,8 +59,24 @@ export default function RulesForm({
   const gameModeValue = `${rules.variant}:${rules.betting}`
   const setGameMode = (v: string) => {
     const [variant, betting] = v.split(':') as [TableRulesSchema['variant'], TableRulesSchema['betting']]
-    setRules((r) => ({ ...r, variant, betting }))
+    const isPLO = betting === 'pot_limit'
+    const holeCount = isPLO ? 4 : 2
+    // Mirror backend compute_max_players: (deckSize - 3 burns - 5 community) / holeCount, cap at 9
+    const deckSize = variant === 'shortdeck' ? 36 : 52
+    const cap = Math.min(9, Math.floor((deckSize - 3 - 5) / holeCount))
+    setRules((r) => ({
+      ...r,
+      variant,
+      betting,
+      hole_cards_count: holeCount,
+      must_use_exactly_two_hole_cards: isPLO,
+      max_players: Math.min(r.max_players, cap),
+    }))
   }
+
+  // Recompute max-players cap based on current rules (mirrors backend compute_max_players)
+  const deckSize = rules.variant === 'shortdeck' ? 36 : 52
+  const maxPlayersCap = Math.min(9, Math.floor((deckSize - 3 - 5) / rules.hole_cards_count))
 
   const inputClass =
     'bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500 w-full'
@@ -120,13 +136,13 @@ export default function RulesForm({
         <input
           type="range"
           min={2}
-          max={9}
+          max={maxPlayersCap}
           value={rules.max_players}
           onChange={(e) => set('max_players', Number(e.target.value))}
           className="w-full accent-green-500"
         />
         <div className="flex justify-between text-zinc-600 text-xs mt-1">
-          {[2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+          {[2, 3, 4, 5, 6, 7, 8, 9].filter((n) => n <= maxPlayersCap).map((n) => (
             <span key={n} className={rules.max_players === n ? 'text-green-400' : ''}>
               {n}
             </span>
@@ -176,6 +192,43 @@ export default function RulesForm({
               onChange={(e) => set('hole_cards_count', Number(e.target.value))}
             />
           </InputRow>
+
+          {/* Street card counts */}
+          <div className="flex flex-col gap-2">
+            <label className="text-zinc-400 text-xs font-medium">Community Cards Per Street</label>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                { street: 'flop', base: 3, label: 'Flop', min: 1, max: 5 },
+                { street: 'turn', base: 1, label: 'Turn', min: 0, max: 3 },
+                { street: 'river', base: 1, label: 'River', min: 0, max: 3 },
+              ] as const).map(({ street, base, label, min, max }) => {
+                const current = base + (rules.street_modifiers[street] ?? 0)
+                return (
+                  <div key={street} className="flex flex-col gap-1">
+                    <label className="text-zinc-500 text-xs text-center">{label}</label>
+                    <input
+                      type="number"
+                      className={inputClass + ' text-center'}
+                      min={min}
+                      max={max}
+                      value={current}
+                      onChange={(e) => {
+                        const val = Number(e.target.value)
+                        const mod = val - base
+                        const newMods = { ...rules.street_modifiers }
+                        if (mod === 0) {
+                          delete newMods[street]
+                        } else {
+                          newMods[street] = mod
+                        }
+                        set('street_modifiers', newMods)
+                      }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
 
           {/* Checkboxes */}
           {[

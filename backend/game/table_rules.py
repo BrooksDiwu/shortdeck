@@ -3,8 +3,8 @@ from typing import Literal
 
 _ABSOLUTE_MAX = 9
 _DECK_SIZES = {"holdem": 52, "shortdeck": 36}
-_COMMUNITY_CARDS = 5      # flop(3) + turn(1) + river(1)
-_EXTRA_FLOP_CARDS = 3     # secondary board gets the flop only
+_BURN_CARDS = 3
+_BASE_STREET_CARDS = {"flop": 3, "turn": 1, "river": 1}
 
 
 @dataclass
@@ -51,9 +51,13 @@ class TableRules:
 
     def compute_max_players(self) -> int:
         deck = _DECK_SIZES[self.variant]
-        community = _COMMUNITY_CARDS + (_EXTRA_FLOP_CARDS if self.extra_flop else 0)
+        num_boards = 2 if self.extra_flop else 1
+        cards_per_board = sum(
+            max(0, base + self.street_modifiers.get(street, 0))
+            for street, base in _BASE_STREET_CARDS.items()
+        )
         hole = self.hole_cards_count + (1 if self.extra_hole_card else 0)
-        budget = (deck - community) // hole
+        budget = (deck - _BURN_CARDS - num_boards * cards_per_board) // hole
         return min(budget, _ABSOLUTE_MAX)
 
     @classmethod

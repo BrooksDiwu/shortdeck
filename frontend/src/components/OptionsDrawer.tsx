@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import type { Table, TableRulesSchema } from '@/types'
@@ -14,9 +14,12 @@ interface OptionsDrawerProps {
   localPlayerId?: string | null
   isSeated: boolean
   isAdmin: boolean
+  pendingSitOut: boolean
+  onRequestSitOut: () => void
+  onCancelSitOut: () => void
 }
 
-export default function OptionsDrawer({ open, onClose, table, isSeated, isAdmin }: OptionsDrawerProps) {
+export default function OptionsDrawer({ open, onClose, table, localPlayerId, isSeated, isAdmin, pendingSitOut, onRequestSitOut, onCancelSitOut }: OptionsDrawerProps) {
   const navigate = useNavigate()
   const { sendMessage, setActionBarMode, actionBarMode, disconnect } = useGameStore()
   const { muted, toggleMute } = useSoundStore()
@@ -24,7 +27,17 @@ export default function OptionsDrawer({ open, onClose, table, isSeated, isAdmin 
   const [showManagePlayers, setShowManagePlayers] = useState(false)
   const [standUpConfirm, setStandUpConfirm] = useState(false)
 
+  const localPlayer = table && localPlayerId
+    ? Object.values(table.players).find((p) => p.session_id === localPlayerId) ?? null
+    : null
+  const isSittingOut = localPlayer?.status === 'sitting_out'
+  const isHandActive = table ? !['waiting', 'between_hands'].includes(table.phase) : false
+
   const handleLeave = () => {
+    // If seated and sitting out, stand up first so the seat is freed immediately
+    if (isSeated && isSittingOut) {
+      sendMessage({ type: 'stand_up' })
+    }
     disconnect()
     navigate('/')
   }
@@ -32,6 +45,23 @@ export default function OptionsDrawer({ open, onClose, table, isSeated, isAdmin 
   const handleStandUp = () => {
     sendMessage({ type: 'stand_up' })
     setStandUpConfirm(false)
+    onClose()
+  }
+
+  const handleSitOutClick = () => {
+    if (isHandActive) {
+      // Queue sit-out for after hand ends
+      onRequestSitOut()
+      onClose()
+    } else {
+      sendMessage({ type: 'sit_out' })
+      onClose()
+    }
+  }
+
+  const handleSitIn = () => {
+    sendMessage({ type: 'sit_in' })
+    onCancelSitOut()
     onClose()
   }
 
@@ -177,18 +207,42 @@ export default function OptionsDrawer({ open, onClose, table, isSeated, isAdmin 
                   />
                 )}
 
-                {/* Stand up */}
-                {isSeated && (
+                {/* Sit out / sit in / stand up */}
+                {isSeated && !isSittingOut && (
                   <MenuItem
-                    label="Stand Up"
-                    sublabel="Return to spectator view"
+                    label={pendingSitOut ? 'Sitting Out After Hand' : 'Sit Out Next Hand'}
+                    sublabel={pendingSitOut ? 'Tap to cancel' : 'Skip next hand(s)'}
                     icon={
                       <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                       </svg>
                     }
-                    onClick={() => setStandUpConfirm(true)}
+                    onClick={pendingSitOut ? () => { onCancelSitOut(); onClose() } : handleSitOutClick}
                   />
+                )}
+                {isSeated && isSittingOut && (
+                  <>
+                    <MenuItem
+                      label="Sit Back In"
+                      sublabel="You will be dealt in next hand"
+                      icon={
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      }
+                      onClick={handleSitIn}
+                    />
+                    <MenuItem
+                      label="Stand Up"
+                      sublabel="Cash out and return to spectator"
+                      icon={
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                      }
+                      onClick={() => setStandUpConfirm(true)}
+                    />
+                  </>
                 )}
 
                 <div className="border-t border-zinc-800 my-1" />

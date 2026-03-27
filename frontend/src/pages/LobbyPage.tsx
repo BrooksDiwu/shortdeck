@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import type { TableResponse, TableRulesSchema } from '@/types'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -10,11 +10,13 @@ import RulesForm from '@/components/RulesForm'
 
 export default function LobbyPage() {
   const navigate = useNavigate()
-  const { token, createSession } = useSessionStore()
+  const location = useLocation()
+  const { createSession } = useSessionStore()
 
   const [tables, setTables] = useState<TableResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [banner, setBanner] = useState<string | null>((location.state as { error?: string } | null)?.error ?? null)
 
   // Modal states
   const [nameModalOpen, setNameModalOpen] = useState(false)
@@ -51,13 +53,10 @@ export default function LobbyPage() {
   }, [fetchTables])
 
   const requireName = (action: typeof pendingAction) => {
-    if (token) {
-      // Already have a session — proceed directly
-      executePendingAction(action)
-      return
-    }
     setPendingAction(action)
     setNameModalOpen(true)
+    setNameInput('')
+    setNameError('')
   }
 
   const handleNameSubmit = async () => {
@@ -68,9 +67,15 @@ export default function LobbyPage() {
     setNameLoading(true)
     setNameError('')
     try {
-      await createSession(nameInput.trim())
-      setNameModalOpen(false)
-      executePendingAction(pendingAction)
+      const name = nameInput.trim()
+      if (pendingAction?.type === 'join') {
+        await doJoin(pendingAction.tableId, name)
+      } else if (pendingAction?.type === 'create') {
+        // For create, we need a session first — create it then open the modal
+        await createSession(name)
+        setNameModalOpen(false)
+        setCreateModalOpen(true)
+      }
     } catch (e) {
       setNameError((e as Error).message)
     } finally {
@@ -78,23 +83,18 @@ export default function LobbyPage() {
     }
   }
 
-  const executePendingAction = (action: typeof pendingAction) => {
-    if (!action) return
-    if (action.type === 'join') {
-      void doJoin(action.tableId)
-    } else if (action.type === 'create') {
-      setCreateModalOpen(true)
-    }
-  }
-
-  const doJoin = async (tableId: string) => {
+  const doJoin = async (tableId: string, name: string) => {
+    // Create session right before joining; if join fails, clear it
+    await createSession(name)
     const currentToken = useSessionStore.getState().token
     if (!currentToken) return
     try {
       await api.joinTable(currentToken, tableId)
+      setNameModalOpen(false)
       navigate(`/table/${tableId}`)
     } catch (e) {
-      setError((e as Error).message)
+      useSessionStore.getState().clearSession()
+      throw e
     }
   }
 
@@ -108,6 +108,7 @@ export default function LobbyPage() {
       await api.joinTable(currentToken, table.table_id)
       navigate(`/table/${table.table_id}`)
     } catch (e) {
+      useSessionStore.getState().clearSession()
       setCreateError((e as Error).message)
     } finally {
       setCreateLoading(false)
@@ -132,6 +133,16 @@ export default function LobbyPage() {
           <p className="text-zinc-500 text-sm mt-1">Real-time multiplayer poker</p>
         </motion.div>
       </header>
+
+      {/* Error banner */}
+      {banner && (
+        <div className="max-w-2xl mx-auto w-full px-4 mb-2">
+          <div className="flex items-center justify-between gap-3 bg-red-900/40 border border-red-700/50 rounded-lg px-4 py-3">
+            <p className="text-red-400 text-sm">{banner}</p>
+            <button onClick={() => setBanner(null)} className="text-red-400 hover:text-red-200 text-lg leading-none shrink-0">&times;</button>
+          </div>
+        </div>
+      )}
 
       {/* Table list */}
       <main className="flex-1 px-4 pb-32 max-w-2xl mx-auto w-full">

@@ -15,13 +15,14 @@ import ConnectionStatus from '@/components/ConnectionStatus'
 export default function TablePage() {
   const { id: tableId } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { token, sessionId } = useSessionStore()
+  const { token, sessionId, clearSession } = useSessionStore()
   const {
     connect,
     disconnect,
     sendMessage,
     table,
     connectionState,
+    connectionError,
     holeCards,
     voteResolution,
     localPlayerId,
@@ -34,6 +35,25 @@ export default function TablePage() {
   const [sitSeat, setSitSeat] = useState<number | null>(null)
   const [sitDownOpen, setSitDownOpen] = useState(false)
   const [contextMenuSeat, setContextMenuSeat] = useState<{ seat: number; x: number; y: number } | null>(null)
+  const [pendingSitOut, setPendingSitOut] = useState(false)
+
+  // When hand ends, auto-send queued sit-out
+  useEffect(() => {
+    if (!pendingSitOut) return
+    if (!table) return
+    if (table.phase === 'between_hands' || table.phase === 'waiting') {
+      sendMessage({ type: 'sit_out' })
+      setPendingSitOut(false)
+    }
+  }, [table?.phase, pendingSitOut, sendMessage])
+
+  // Clear pending sit-out if player is already sitting out (e.g. reconnect)
+  const localPlayerStatus = table && localPlayerId
+    ? Object.values(table.players).find((p) => p.session_id === localPlayerId)?.status
+    : undefined
+  useEffect(() => {
+    if (localPlayerStatus === 'sitting_out') setPendingSitOut(false)
+  }, [localPlayerStatus])
 
   // Auto-connect on mount if session exists
   useEffect(() => {
@@ -59,6 +79,14 @@ export default function TablePage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableId])
+
+  // Redirect to lobby with error message when rejected (e.g. duplicate name)
+  useEffect(() => {
+    if (connectionError) {
+      clearSession()
+      navigate('/', { state: { error: connectionError } })
+    }
+  }, [connectionError, navigate, clearSession])
 
   const localPlayer = table && localPlayerId
     ? Object.values(table.players).find((p) => p.session_id === localPlayerId) ?? null
@@ -107,7 +135,9 @@ export default function TablePage() {
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
         <div className="text-center">
           <p className="text-red-400 text-lg font-semibold mb-2">Connection Failed</p>
-          <p className="text-zinc-500 text-sm mb-4">Could not connect to the table.</p>
+          <p className="text-zinc-500 text-sm mb-4">
+            {connectionError ?? 'Could not connect to the table.'}
+          </p>
           <button
             onClick={() => navigate('/')}
             className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-white text-sm"
@@ -152,6 +182,7 @@ export default function TablePage() {
           onMenuOpen={() => setMenuOpen(true)}
           onSitDown={handleSitDown}
           onStartHand={() => sendMessage({ type: 'start_hand' })}
+          pendingSitOut={pendingSitOut}
         />
       ) : (
         <div className="flex items-center justify-center h-[100dvh]">
@@ -167,6 +198,9 @@ export default function TablePage() {
         localPlayerId={localPlayerId}
         isSeated={isSeated}
         isAdmin={isAdmin}
+        pendingSitOut={pendingSitOut}
+        onRequestSitOut={() => setPendingSitOut(true)}
+        onCancelSitOut={() => setPendingSitOut(false)}
       />
 
       {/* Sit down modal */}

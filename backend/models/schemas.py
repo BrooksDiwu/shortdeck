@@ -25,7 +25,21 @@ class TableRulesSchema(BaseModel):
     timer_seconds: int = Field(default=30, ge=1)
 
     @model_validator(mode="after")
-    def _validate_max_players(self) -> "TableRulesSchema":
+    def _validate_rules(self) -> "TableRulesSchema":
+        # Validate street modifier ranges:
+        #   flop base=3, allowed range 1–5  → mod in [-2, +2]
+        #   turn base=1, allowed range 0–3  → mod in [-1, +2]
+        #   river base=1, allowed range 0–3 → mod in [-1, +2]
+        limits = {"flop": (-2, 2), "turn": (-1, 2), "river": (-1, 2)}
+        for street, mod in self.street_modifiers.items():
+            if street not in limits:
+                raise ValueError(f"Unknown street modifier key: {street!r}")
+            lo, hi = limits[street]
+            if not (lo <= mod <= hi):
+                raise ValueError(
+                    f"street_modifiers[{street!r}] = {mod} out of range [{lo}, {hi}]"
+                )
+
         from backend.game.table_rules import TableRules
         rules = TableRules(**self.model_dump())
         cap = rules.compute_max_players()

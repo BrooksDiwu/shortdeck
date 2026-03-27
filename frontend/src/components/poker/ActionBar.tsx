@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { useGameStore } from "@/stores/gameStore";
 import { formatAmount } from "@/utils/gameUtils";
@@ -42,7 +42,12 @@ const ActionBar = ({ table, localPlayer }: ActionBarProps) => {
   const maxRaise = computeMaxRaise(table, localPlayer);
   const potLimit = computePotLimit(table, localPlayer);
   const isAllIn = localPlayer.stack <= callAmount;
-  const currentRaise = raiseAmount || minRaise;
+
+  useEffect(() => {
+    setRaiseAmount(minRaise);
+  }, [minRaise]);
+
+  const currentRaise = Math.max(minRaise, Math.min(raiseAmount || minRaise, maxRaise));
   const denom = table.rules.denomination;
 
   const handleAction = useCallback(
