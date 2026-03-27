@@ -83,7 +83,7 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
         <div className="absolute inset-x-4 top-4 bottom-4 rounded-[45%/50%] bg-felt border-4 border-gold-dim/40 shadow-[inset_0_0_60px_rgba(0,0,0,0.4)]" />
 
         {/* Pot */}
-        <div className={`absolute ${hasDoubleBoard ? "top-[30%]" : "top-[38%]"} left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center`}>
+        <div className={`absolute ${hasDoubleBoard ? "top-[24%]" : "top-[38%]"} left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center`}>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Pot</div>
           <div className="text-lg font-bold text-primary">
             {formatAmount(pot, table.rules.denomination)}
@@ -154,7 +154,7 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
                       </div>
                     );
                   })}
-                  {/* Ghost placeholders for secondary board's remaining turn/river slots */}
+                  {/* Ghost placeholders for remaining secondary board slots */}
                   {Array.from({ length: 5 - secondaryBoard.length }).map((_, i) => (
                     <div
                       key={`ghost-secondary-${i}`}

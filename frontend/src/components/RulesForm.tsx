@@ -51,8 +51,21 @@ export default function RulesForm({
   const [rules, setRules] = useState<TableRulesSchema>({ ...DEFAULT_RULES, ...defaultRules })
   const [showAdvanced, setShowAdvanced] = useState(false)
 
+  const computeCap = (r: TableRulesSchema): number => {
+    const deck = r.variant === 'shortdeck' ? 36 : 52
+    const base: Record<string, number> = { flop: 3, turn: 1, river: 1 }
+    const boards = r.extra_flop ? 2 : 1
+    const boardCards = Object.entries(base).reduce((sum, [s, b]) => sum + Math.max(0, b + (r.street_modifiers[s] ?? 0)), 0)
+    const hole = r.hole_cards_count + (r.extra_hole_card ? 1 : 0)
+    return Math.min(9, Math.floor((deck - 3 - boards * boardCards) / hole))
+  }
+
   const set = <K extends keyof TableRulesSchema>(key: K, value: TableRulesSchema[K]) => {
-    setRules((r) => ({ ...r, [key]: value }))
+    setRules((r) => {
+      const next = { ...r, [key]: value }
+      const cap = computeCap(next)
+      return { ...next, max_players: Math.min(next.max_players, cap) }
+    })
   }
 
   // Sync variant+betting to a friendly "game mode" selector
@@ -61,22 +74,14 @@ export default function RulesForm({
     const [variant, betting] = v.split(':') as [TableRulesSchema['variant'], TableRulesSchema['betting']]
     const isPLO = betting === 'pot_limit'
     const holeCount = isPLO ? 4 : 2
-    // Mirror backend compute_max_players: (deckSize - 3 burns - 5 community) / holeCount, cap at 9
-    const deckSize = variant === 'shortdeck' ? 36 : 52
-    const cap = Math.min(9, Math.floor((deckSize - 3 - 5) / holeCount))
-    setRules((r) => ({
-      ...r,
-      variant,
-      betting,
-      hole_cards_count: holeCount,
-      must_use_exactly_two_hole_cards: isPLO,
-      max_players: Math.min(r.max_players, cap),
-    }))
+    setRules((r) => {
+      const next = { ...r, variant, betting, hole_cards_count: holeCount, must_use_exactly_two_hole_cards: isPLO }
+      const cap = computeCap(next)
+      return { ...next, max_players: Math.min(next.max_players, cap) }
+    })
   }
 
-  // Recompute max-players cap based on current rules (mirrors backend compute_max_players)
-  const deckSize = rules.variant === 'shortdeck' ? 36 : 52
-  const maxPlayersCap = Math.min(9, Math.floor((deckSize - 3 - 5) / rules.hole_cards_count))
+  const maxPlayersCap = computeCap(rules)
 
   const inputClass =
     'bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-green-500 w-full'

@@ -141,12 +141,16 @@ class BettingEngine:
 
         # Find dealer position, then SB and BB
         dealer_idx = next((i for i, p in enumerate(seated) if p.seat == table.dealer_seat), 0)
-        sb_idx = (dealer_idx + 1) % len(seated)
-        bb_idx = (dealer_idx + 2) % len(seated)
 
-        sb_player = seated[sb_idx]
-        bb_player = seated[bb_idx]
-        utg_idx = (dealer_idx + 3) % len(seated)
+        # Heads-up rule: dealer is the SB and acts first preflop
+        if len(seated) == 2:
+            sb_idx = dealer_idx
+            bb_idx = (dealer_idx + 1) % len(seated)
+            utg_idx = dealer_idx  # button/SB acts first preflop heads-up
+        else:
+            sb_idx = (dealer_idx + 1) % len(seated)
+            bb_idx = (dealer_idx + 2) % len(seated)
+            utg_idx = (dealer_idx + 3) % len(seated)
 
         # Post SB
         sb_amount = min(table.rules.small_blind, sb_player.stack)

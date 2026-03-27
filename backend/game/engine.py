@@ -69,7 +69,7 @@ class GameEngine:
         new_cards = table.deck.deal(n)
         table.board.primary.extend(new_cards)
 
-        if self.rules.extra_flop and street.name == "flop":
+        if self.rules.extra_flop and street.name in ("flop", "turn", "river"):
             secondary_cards = table.deck.deal(n)
             table.board.secondary.extend(secondary_cards)
 
