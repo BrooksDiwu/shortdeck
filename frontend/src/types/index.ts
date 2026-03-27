@@ -102,6 +102,7 @@ export type ClientMessage =
   | { type: 'host_remove_player'; session_id: string }
   | { type: 'replay_request'; from_seq: number }
   | { type: 'start_hand' }
+  | { type: 'chat_message'; text: string }
 
 // WebSocket message types (server → client)
 export type ServerMessage =
@@ -119,5 +120,6 @@ export type ServerMessage =
   | { type: 'game_unpaused' }
   | { type: 'vote_update'; votes_for: number; votes_against: number; total_eligible: number }
   | { type: 'vote_resolved'; passed: boolean; new_rules?: TableRulesSchema }
+  | { type: 'chat_message'; session_id: string; sender: string; text: string; timestamp: string }
 
 export type ActionBarMode = 'bottom' | 'overlay'

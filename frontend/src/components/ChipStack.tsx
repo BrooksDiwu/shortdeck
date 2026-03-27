@@ -10,7 +10,43 @@ interface ChipStackProps {
 
 const CHIP_DIAMETER_SM = 18
 const CHIP_DIAMETER_MD = 24
-const CHIP_OFFSET = 3 // vertical offset per chip
+const CHIP_OFFSET = 3 // vertical offset per chip in a column
+
+const CHIPS_PER_STACK = 20 // each visual stack represents this many chips
+
+// Grid sequence: add a row first, then a column.
+// 1 stack=1×1, 2=1×2, 3-4=2×2, 5-6=2×3, 7-9=3×3, ...
+function getGrid(numStacks: number): [number, number] {
+  let cols = 1, rows = 1
+  while (cols * rows < numStacks) {
+    if (rows === cols) rows++
+    else cols++
+  }
+  return [cols, rows]
+}
+
+// Renders a single physical stack of chips showing denomination colors bottom-to-top.
+// `chips` is an ordered array of colors from bottom chip to top chip.
+function SingleStack({ chips, diameter }: { chips: string[]; diameter: number }) {
+  const height = chips.length * CHIP_OFFSET + diameter
+  return (
+    <div className="relative flex-shrink-0" style={{ width: diameter, height }}>
+      {chips.map((color, i) => (
+        <div
+          key={i}
+          className="absolute rounded-full border-2 border-black/30"
+          style={{
+            width: diameter,
+            height: diameter,
+            backgroundColor: color,
+            bottom: i * CHIP_OFFSET,
+            boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
+          }}
+        />
+      ))}
+    </div>
+  )
+}
 
 export default function ChipStack({ amount, size = 'md', className = '', id }: ChipStackProps) {
   if (amount <= 0) return null
@@ -18,36 +54,58 @@ export default function ChipStack({ amount, size = 'md', className = '', id }: C
   const breakdown = getChipBreakdown(amount)
   const diameter = size === 'sm' ? CHIP_DIAMETER_SM : CHIP_DIAMETER_MD
 
-  // Flatten into individual chip display items (cap per denom for visual)
-  const chips: Array<{ color: string }> = []
+  // Total number of physical chips across all denominations
+  const totalChips = breakdown.reduce((s, { count }) => s + count, 0)
+  // Each grid cell = one visual stack representing CHIPS_PER_STACK real chips
+  const numStacks = Math.max(1, Math.ceil(totalChips / CHIPS_PER_STACK))
+  const [numCols, numRows] = getGrid(numStacks)
+
+  // Build the color sequence for a single representative stack (denomination colors,
+  // proportional to their share of the total). Every stack cell shows the same pattern.
+  const STACK_CHIP_COUNT = 8 // how many colored chips to show per visual stack
+  const stackChips: string[] = []
   for (const { color, count } of breakdown) {
-    const shown = Math.min(count, 6) // max 6 per denomination for clean look
-    for (let i = 0; i < shown; i++) {
-      chips.push({ color })
+    const slots = Math.max(1, Math.round((count / totalChips) * STACK_CHIP_COUNT))
+    for (let i = 0; i < slots && stackChips.length < STACK_CHIP_COUNT; i++) {
+      stackChips.push(color)
     }
   }
+  // Pad to STACK_CHIP_COUNT if rounding left us short
+  while (stackChips.length < STACK_CHIP_COUNT) stackChips.push(breakdown[breakdown.length - 1].color)
 
-  const totalHeight = chips.length * CHIP_OFFSET + diameter
+  // Each grid cell is one SingleStack. Cells are arranged:
+  //   cols = side by side horizontally (x-axis)
+  //   rows = stacks offset slightly behind each other (z-depth illusion via y-offset)
+  // We render rows back-to-front so front row appears on top.
+  const singleStackHeight = STACK_CHIP_COUNT * CHIP_OFFSET + diameter
+  const ROW_DEPTH_OFFSET = 4 // px each row shifts down to give depth illusion
+  const totalHeight = singleStackHeight + (numRows - 1) * ROW_DEPTH_OFFSET
+  const totalWidth = numCols * (diameter + 4) - 4
 
   return (
     <div
       id={id}
-      className={`chip-stack-container relative inline-flex flex-col items-center ${className}`}
-      style={{ width: diameter, height: totalHeight }}
+      className={`chip-stack-container relative ${className}`}
+      style={{ width: totalWidth, height: totalHeight }}
     >
-      {chips.map((chip, i) => (
-        <div
-          key={i}
-          className="absolute rounded-full border-2 border-black/30"
-          style={{
-            width: diameter,
-            height: diameter,
-            backgroundColor: chip.color,
-            bottom: i * CHIP_OFFSET,
-            boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
-          }}
-        />
-      ))}
+      {Array.from({ length: numRows }).map((_, ri) =>
+        Array.from({ length: numCols }).map((_, ci) => {
+          const stackIdx = ri * numCols + ci
+          if (stackIdx >= numStacks) return null
+          return (
+            <div
+              key={`${ri}-${ci}`}
+              className="absolute"
+              style={{
+                left: ci * (diameter + 4),
+                top: (numRows - 1 - ri) * ROW_DEPTH_OFFSET,
+              }}
+            >
+              <SingleStack chips={stackChips} diameter={diameter} />
+            </div>
+          )
+        })
+      )}
     </div>
   )
 }

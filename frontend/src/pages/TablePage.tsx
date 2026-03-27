@@ -26,6 +26,8 @@ export default function TablePage() {
     holeCards,
     voteResolution,
     localPlayerId,
+    serverError,
+    clearServerError,
   } = useGameStore()
 
   // GSAP chip animations
@@ -36,6 +38,13 @@ export default function TablePage() {
   const [sitDownOpen, setSitDownOpen] = useState(false)
   const [contextMenuSeat, setContextMenuSeat] = useState<{ seat: number; x: number; y: number } | null>(null)
   const [pendingSitOut, setPendingSitOut] = useState(false)
+
+  // Auto-dismiss server error toast
+  useEffect(() => {
+    if (!serverError) return
+    const t = setTimeout(clearServerError, 4000)
+    return () => clearTimeout(t)
+  }, [serverError, clearServerError])
 
   // When hand ends, auto-send queued sit-out
   useEffect(() => {
@@ -172,6 +181,27 @@ export default function TablePage() {
           </div>
         </div>
       )}
+
+      {/* Server error toast */}
+      <AnimatePresence>
+        {serverError && (
+          <motion.div
+            initial={{ opacity: 0, y: 40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 40 }}
+            className="fixed bottom-24 left-0 right-0 z-50 flex justify-center px-4 pointer-events-none"
+          >
+            <div className="bg-red-900/95 border border-red-700 rounded-xl px-4 py-3 flex items-center gap-3 max-w-sm w-full shadow-2xl pointer-events-auto">
+              <span className="text-red-200 text-sm flex-1">{serverError}</span>
+              <button onClick={clearServerError} className="text-red-400 hover:text-red-200 shrink-0">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Mobile poker table — fills full screen */}
       {table ? (

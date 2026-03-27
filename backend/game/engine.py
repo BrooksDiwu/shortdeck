@@ -202,7 +202,8 @@ class GameEngine:
         # Reset player statuses
         for p in table.players.values():
             if p.status in ("active", "all_in", "folded"):
-                p.status = "active"
+                # Players who were auto-folded due to disconnect (disconnect_at is set) sit out
+                p.status = "sitting_out" if p.disconnect_at is not None else "active"
             p.current_bet = 0
             p.total_in = 0
             p.hole_cards = []

@@ -1,22 +1,29 @@
 import { useState, useRef, useEffect } from 'react'
-
-interface Message {
-  user: string
-  text: string
-}
-
-const INITIAL_MESSAGES: Message[] = [
-  { user: 'Phil', text: 'Nice hand!' },
-  { user: 'Sara', text: 'gg' },
-  { user: 'Mike', text: 'All in next round 😤' },
-]
+import { useGameStore } from '@/stores/gameStore'
 
 export default function ChatBubble() {
   const [open, setOpen] = useState(false)
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
   const [input, setInput] = useState('')
+  const [unread, setUnread] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const chatMessages = useGameStore((s) => s.chatMessages)
+  const sendMessage = useGameStore((s) => s.sendMessage)
+
+  // Track unread count when panel is closed
+  const prevLengthRef = useRef(chatMessages.length)
+  useEffect(() => {
+    if (!open && chatMessages.length > prevLengthRef.current) {
+      setUnread((u) => u + (chatMessages.length - prevLengthRef.current))
+    }
+    prevLengthRef.current = chatMessages.length
+  }, [chatMessages.length, open])
+
+  // Clear unread when opened
+  useEffect(() => {
+    if (open) setUnread(0)
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -33,11 +40,12 @@ export default function ChatBubble() {
     if (open) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [messages, open])
+  }, [chatMessages, open])
 
   const send = () => {
-    if (!input.trim()) return
-    setMessages((m) => [...m, { user: 'You', text: input.trim() }])
+    const text = input.trim()
+    if (!text) return
+    sendMessage({ type: 'chat_message', text })
     setInput('')
   }
 
@@ -62,6 +70,11 @@ export default function ChatBubble() {
               d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
             />
           </svg>
+          {unread > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+              {unread > 9 ? '9+' : unread}
+            </span>
+          )}
         </button>
       )}
 
@@ -86,9 +99,12 @@ export default function ChatBubble() {
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
-            {messages.map((m, i) => (
+            {chatMessages.length === 0 && (
+              <p className="text-[11px] text-zinc-500 text-center mt-4">No messages yet</p>
+            )}
+            {chatMessages.map((m, i) => (
               <div key={i} className="text-[11px]">
-                <span className="font-bold text-yellow-300">{m.user}: </span>
+                <span className="font-bold text-yellow-300">{m.sender}: </span>
                 <span className="text-zinc-300">{m.text}</span>
               </div>
             ))}

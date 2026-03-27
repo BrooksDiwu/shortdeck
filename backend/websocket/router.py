@@ -35,11 +35,14 @@ async def _grace_timer_task(
     session_id: str,
     table_service: TableService,
 ) -> None:
-    """Wait DISCONNECT_GRACE_SECONDS then auto-act if it's the player's turn."""
+    """Wait DISCONNECT_GRACE_SECONDS, then fold the player and mark them sitting_out."""
     try:
         await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
     except asyncio.CancelledError:
         return
+
+    round_complete = False
+    table = None
 
     try:
         async with table_service.acquire_lock(table_id):
@@ -50,54 +53,58 @@ async def _grace_timer_task(
 
             player = table.players[session_id]
 
-            # Only auto-act if still disconnected AND it's their turn
             if player.status != "disconnected":
                 return
-            if table.current_action_seat != player.seat:
+
+            is_their_turn = table.current_action_seat == player.seat
+
+            if table.phase in ("waiting", "between_hands"):
+                # No active hand — just sit them out
+                player.status = "sitting_out"
+                table.action_seq += 1
+                await table_service.save_table(table)
+                broadcast_msg = _build_event_message(
+                    table, "player_sit_out", session_id,
+                    players={session_id: {"status": "sitting_out"}},
+                )
+                await table_service.publish_event(table_id, broadcast_msg)
+                logger.info(f"Disconnected player {session_id} sat out at table {table_id} (between hands)")
                 return
 
-            # Determine auto-action: check if legal, otherwise fold
-            max_opponent_bet = max(
-                (p.current_bet for sid, p in table.players.items()
-                 if sid != session_id and p.status in ("active", "disconnected")),
-                default=0,
-            )
-            if player.current_bet >= max_opponent_bet:
-                auto_action = "check"
-                auto_amount = 0
+            # Mid-hand: fold them out of the current hand.
+            # sitting_out will be applied by end_hand() since disconnect_at is set.
+            if is_their_turn:
+                BettingEngine.apply_action(table, session_id, "fold", 0)
+                table.action_seq += 1
+
+                _advance_action(table)
+                round_complete = _is_betting_round_complete(table)
+
+                event_log = {
+                    "seq": table.action_seq,
+                    "hand": table.hand_number,
+                    "type": "action",
+                    "session_id": session_id,
+                    "street": table.phase,
+                    "action": "fold",
+                    "amount": 0,
+                    "auto": True,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                await table_service.append_event(table_id, event_log)
             else:
-                auto_action = "fold"
-                auto_amount = 0
+                # Not their turn — fold them out-of-turn so they're removed from the hand.
+                # Status stays "folded" until end_hand() transitions it to "sitting_out".
+                player.status = "folded"
+                table.action_seq += 1
+                round_complete = _is_betting_round_complete(table)
 
-            BettingEngine.apply_action(table, session_id, auto_action, auto_amount)
-            table.action_seq += 1
-
-            if auto_action in ("raise", "all_in"):
-                table.last_aggressor_seat = player.seat
-            elif auto_action == "check" and table.last_aggressor_seat is None:
-                table.last_aggressor_seat = player.seat
-
-            _advance_action(table)
-            round_complete = _is_betting_round_complete(table)
-
-            event_log = {
-                "seq": table.action_seq,
-                "hand": table.hand_number,
-                "type": "action",
-                "session_id": session_id,
-                "street": table.phase,
-                "action": auto_action,
-                "amount": auto_amount,
-                "auto": True,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-            await table_service.append_event(table_id, event_log)
             await table_service.save_table(table)
 
             broadcast_msg = _build_event_message(
                 table, "action", session_id,
-                action=auto_action,
-                amount=auto_amount,
+                action="fold",
+                amount=0,
                 auto=True,
                 state_patch={
                     "pot": table.pot,
@@ -111,8 +118,8 @@ async def _grace_timer_task(
             await table_service.publish_event(table_id, broadcast_msg)
 
             logger.info(
-                f"Auto-{auto_action} for disconnected player {session_id} "
-                f"at table {table_id} (seat {player.seat})"
+                f"Auto-folded disconnected player {session_id} at table {table_id} "
+                f"(seat {player.seat}, was_their_turn={is_their_turn})"
             )
 
         if round_complete:
@@ -445,6 +452,8 @@ async def _dispatch_message(
         await _handle_host_remove_player(table_id, session_id, msg, table_service)
     elif msg_type == "start_hand":
         await _handle_start_hand(table_id, session_id, table_service)
+    elif msg_type == "chat_message":
+        await _handle_chat_message(table_id, session_id, msg, table_service)
     else:
         await manager.send_personal(table_id, session_id, {
             "type": "error",
@@ -634,8 +643,9 @@ def _is_betting_round_complete(table) -> bool:
     The round is done when bets are all equal AND the next player to act is the
     last aggressor (meaning action has gone all the way around back to them).
     """
-    # If only one non-folded player remains, hand is over immediately
-    non_folded = [p for p in table.players.values() if p.status in ("active", "all_in")]
+    # If only one non-folded player remains, hand is over immediately.
+    # Disconnected players are still in the hand until they fold/auto-fold.
+    non_folded = [p for p in table.players.values() if p.status in ("active", "all_in", "disconnected")]
     if len(non_folded) <= 1:
         return True
 
@@ -649,11 +659,23 @@ def _is_betting_round_complete(table) -> bool:
     # Otherwise, the round ends when current_action_seat cycles back to the last
     # aggressor. If the aggressor is no longer active (folded/all_in), bets being
     # equal is sufficient — nobody else needs to act.
+    # NOTE: "disconnected" is NOT treated the same as folded/all_in here — a disconnected
+    # player is still in the hand and their auto-action may not have run yet. We only
+    # short-circuit if the aggressor is definitively out (folded or all_in).
     if table.last_aggressor_seat is None:
         return True
     active_seats = {p.seat for p in active}
-    if table.last_aggressor_seat not in active_seats:
+    aggressor_player = next(
+        (p for p in table.players.values() if p.seat == table.last_aggressor_seat), None
+    )
+    aggressor_out = aggressor_player is None or aggressor_player.status in ("folded", "all_in")
+    if aggressor_out:
         return True
+    if table.last_aggressor_seat not in active_seats:
+        # Aggressor is disconnected. Round is complete only if they have already acted
+        # (their current_bet matches the max bet, meaning their auto-action ran).
+        # If they haven't acted yet, their grace timer will fire and advance action normally.
+        return aggressor_player.current_bet == max_bet
     return table.current_action_seat == table.last_aggressor_seat
 
 
@@ -978,6 +1000,18 @@ async def _handle_propose_rule_change(
                 })
                 return
 
+            seated_player_count = len(table.players)
+            if seated_player_count > proposed_rules.compute_max_players():
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "TOO_MANY_PLAYERS",
+                    "message": (
+                        f"Cannot switch to this game mode: {seated_player_count} players are seated "
+                        f"but it only supports up to {proposed_rules.compute_max_players()}."
+                    ),
+                })
+                return
+
             vote = ModeVote(
                 proposed_rules=proposed_rules,
                 proposed_by=session_id,
@@ -1040,6 +1074,18 @@ async def _handle_force_rule_change(
                     "type": "error",
                     "code": "INVALID_RULES",
                     "message": f"Invalid proposed rules: {exc}",
+                })
+                return
+
+            seated_player_count = len(table.players)
+            if seated_player_count > new_rules.compute_max_players():
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "TOO_MANY_PLAYERS",
+                    "message": (
+                        f"Cannot switch to this game mode: {seated_player_count} players are seated "
+                        f"but it only supports up to {new_rules.compute_max_players()}."
+                    ),
                 })
                 return
 
@@ -1809,3 +1855,38 @@ async def _handle_host_remove_player(
             "code": "LOCK_CONFLICT",
             "message": "Action in progress, please retry",
         })
+
+
+async def _handle_chat_message(
+    table_id: str,
+    session_id: str,
+    msg: dict,
+    table_service: TableService,
+) -> None:
+    """Broadcast a chat message to all players at the table."""
+    text = str(msg.get("text", "")).strip()
+    if not text:
+        return
+    # Truncate to prevent abuse
+    text = text[:300]
+
+    # Resolve sender name: prefer seated player name, fall back to session name
+    try:
+        table = await table_service.get_table(table_id)
+        if session_id in table.players:
+            sender_name = table.players[session_id].name
+        else:
+            session_service = SessionService()
+            session = await session_service.get_session(session_id)
+            sender_name = session.name
+    except Exception:
+        sender_name = "Unknown"
+
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    await table_service.publish_event(table_id, {
+        "type": "chat_message",
+        "session_id": session_id,
+        "sender": sender_name,
+        "text": text,
+        "timestamp": timestamp,
+    })

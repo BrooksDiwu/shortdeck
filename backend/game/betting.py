@@ -152,6 +152,9 @@ class BettingEngine:
             bb_idx = (dealer_idx + 2) % len(seated)
             utg_idx = (dealer_idx + 3) % len(seated)
 
+        sb_player = seated[sb_idx]
+        bb_player = seated[bb_idx]
+
         # Post SB
         sb_amount = min(table.rules.small_blind, sb_player.stack)
         sb_player.stack -= sb_amount

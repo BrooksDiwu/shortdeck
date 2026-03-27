@@ -1,17 +1,28 @@
 import { useState, useRef, useEffect } from "react";
 import { MessageCircle, Send } from "lucide-react";
-
-const MESSAGES = [
-  { user: "Phil", text: "Nice hand!" },
-  { user: "Sara", text: "gg" },
-  { user: "Mike", text: "All in next round 😤" },
-];
+import { useGameStore } from "@/stores/gameStore";
 
 const ChatBubble = () => {
   const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState(MESSAGES);
   const [input, setInput] = useState("");
+  const [unread, setUnread] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const chatMessages = useGameStore((s) => s.chatMessages);
+  const sendMessage = useGameStore((s) => s.sendMessage);
+
+  const prevLengthRef = useRef(chatMessages.length);
+  useEffect(() => {
+    if (!open && chatMessages.length > prevLengthRef.current) {
+      setUnread((u) => u + (chatMessages.length - prevLengthRef.current));
+    }
+    prevLengthRef.current = chatMessages.length;
+  }, [chatMessages.length, open]);
+
+  useEffect(() => {
+    if (open) setUnread(0);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -24,25 +35,35 @@ const ChatBubble = () => {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
+  useEffect(() => {
+    if (open) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatMessages, open]);
+
   const send = () => {
-    if (!input.trim()) return;
-    setMessages((m) => [...m, { user: "You", text: input.trim() }]);
+    const text = input.trim();
+    if (!text) return;
+    sendMessage({ type: "chat_message", text });
     setInput("");
   };
 
   return (
     <>
-      {/* Bubble trigger */}
       {!open && (
         <button
           onClick={() => setOpen(true)}
           className="absolute bottom-3 right-3 z-50 w-10 h-10 rounded-full bg-secondary border border-border flex items-center justify-center shadow-lg active:scale-95 transition-transform"
         >
           <MessageCircle className="w-5 h-5 text-primary" />
+          {unread > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+              {unread > 9 ? "9+" : unread}
+            </span>
+          )}
         </button>
       )}
 
-      {/* Chat panel */}
       {open && (
         <div
           ref={panelRef}
@@ -52,12 +73,16 @@ const ChatBubble = () => {
             Table Chat
           </div>
           <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5">
-            {messages.map((m, i) => (
+            {chatMessages.length === 0 && (
+              <p className="text-[11px] text-muted-foreground text-center mt-4">No messages yet</p>
+            )}
+            {chatMessages.map((m, i) => (
               <div key={i} className="text-[11px]">
-                <span className="font-bold text-primary">{m.user}: </span>
+                <span className="font-bold text-primary">{m.sender}: </span>
                 <span className="text-foreground">{m.text}</span>
               </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
           <div className="flex items-center border-t border-border p-1.5 gap-1">
             <input

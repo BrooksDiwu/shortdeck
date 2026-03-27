@@ -2,6 +2,13 @@ import { create } from 'zustand'
 import type { Table, Card, ServerMessage, ClientMessage, ActionBarMode } from '@/types'
 import { useSoundStore } from './soundStore'
 
+export interface ChatMessage {
+  session_id: string
+  sender: string
+  text: string
+  timestamp: string
+}
+
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000'
 
 export type RabbitHuntCards = Card[]
@@ -17,6 +24,8 @@ interface GameState {
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error'
   connectionError: string | null
   voteResolution: { passed: boolean; newRules?: Table['rules'] } | null
+  chatMessages: ChatMessage[]
+  serverError: string | null
 
   connect: (tableId: string, token: string, playerId: string) => void
   disconnect: () => void
@@ -26,6 +35,7 @@ interface GameState {
   setActionBarMode: (mode: ActionBarMode) => void
   clearVoteResolution: () => void
   clearRabbitHunt: () => void
+  clearServerError: () => void
 }
 
 export const useGameStore = create<GameState>((set, get) => ({
@@ -39,6 +49,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   connectionState: 'disconnected',
   connectionError: null,
   voteResolution: null,
+  chatMessages: [],
+  serverError: null,
 
   connect: (tableId: string, token: string, playerId: string) => {
     const existing = get().ws
@@ -79,6 +91,24 @@ export const useGameStore = create<GameState>((set, get) => ({
       const sound = useSoundStore.getState()
 
       console.log('[ws.onmessage] type:', msg.type, JSON.stringify(msg))
+
+      if (msg.type === 'chat_message') {
+        set((state) => ({
+          chatMessages: [...state.chatMessages, {
+            session_id: msg.session_id,
+            sender: msg.sender,
+            text: msg.text,
+            timestamp: msg.timestamp,
+          }],
+        }))
+        return
+      }
+
+      if ((msg as unknown as { type: string }).type === 'error') {
+        const errMsg = msg as unknown as { message: string }
+        set({ serverError: errMsg.message })
+        return
+      }
 
       if (msg.type === 'state_snapshot') {
         // Backend sends players as a list; convert to Record<session_id, Player>
@@ -229,7 +259,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   disconnect: () => {
     const { ws } = get()
     if (ws) ws.close()
-    set({ ws: null, connectionState: 'disconnected', table: null, holeCards: [], localSeq: 0 })
+    set({ ws: null, connectionState: 'disconnected', table: null, holeCards: [], localSeq: 0, chatMessages: [] })
   },
 
   applySnapshot: (snapshot: Table, seq: number) => {
@@ -328,5 +358,9 @@ export const useGameStore = create<GameState>((set, get) => ({
 
   clearRabbitHunt: () => {
     set({ rabbitHuntCards: [] })
+  },
+
+  clearServerError: () => {
+    set({ serverError: null })
   },
 }))

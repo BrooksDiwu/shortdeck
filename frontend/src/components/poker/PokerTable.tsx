@@ -5,22 +5,57 @@ import ActionBar from "./ActionBar";
 import ChatBubble from "./ChatBubble";
 import Modal from "@/components/Modal";
 import { useGameStore } from "@/stores/gameStore";
-import { getCardLabel, getSuitColor, formatAmount } from "@/utils/gameUtils";
+import { getCardLabel, getSuitColor, formatAmount, getChipBreakdown } from "@/utils/gameUtils";
 import type { Table, Card } from "@/types";
 
-// Portrait mobile positions for up to 9 seats.
+// Renders a compact horizontal stack of chip dots for a given amount.
+const ChipDots = ({ amount, maxDots = 5 }: { amount: number; maxDots?: number }) => {
+  const breakdown = getChipBreakdown(amount);
+  // Take up to maxDots chip types, highest first
+  const dots = breakdown.slice(0, maxDots);
+  if (dots.length === 0) return null;
+  return (
+    <div className="flex items-center gap-[2px]">
+      {dots.map(({ color, count }, i) => (
+        <div
+          key={i}
+          className="rounded-full border border-black/40 shadow-sm flex-shrink-0"
+          style={{
+            width: 10,
+            height: 10,
+            background: color,
+            // Stack multiple chips of same denom slightly offset
+            boxShadow: count > 1 ? `0 -2px 0 ${color}, 0 -4px 0 ${color}` : undefined,
+          }}
+        />
+      ))}
+    </div>
+  );
+};
+
+// Generate portrait positions for `n` seats evenly distributed around the oval.
 // Index 0 = local player (bottom center); remaining go counter-clockwise.
-const PORTRAIT_POSITIONS: Array<{ top: string; left: string }> = [
-  { top: "88%", left: "50%" },  // 0 - local (bottom center)
-  { top: "78%", left: "14%" },  // 1
-  { top: "60%", left: "6%" },   // 2
-  { top: "38%", left: "6%" },   // 3
-  { top: "20%", left: "18%" },  // 4
-  { top: "10%", left: "50%" },  // 5
-  { top: "20%", left: "82%" },  // 6
-  { top: "38%", left: "94%" },  // 7
-  { top: "60%", left: "94%" },  // 8
-];
+// Returns position + the angle (degrees) pointing outward from center — used to
+// place stack behind the avatar and bet in front (toward center).
+function getPortraitPositions(n: number): Array<{ top: string; left: string; angleDeg: number }> {
+  const positions: Array<{ top: string; left: string; angleDeg: number }> = [];
+  // CSS coords: x increases right, y increases downward.
+  // bottom-center = angle 90° (cos=0 → left=cx, sin=1 → top=cy+ry)
+  // Counter-clockwise visually = decreasing angle (going left/up first from bottom).
+  const startAngleDeg = 90;
+  const rx = 44;
+  const ry = 40;
+  const cx = 50;
+  const cy = 49;
+  for (let i = 0; i < n; i++) {
+    const angleDeg = startAngleDeg - (360 / n) * i;
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const left = cx + rx * Math.cos(angleRad);
+    const top = cy + ry * Math.sin(angleRad);
+    positions.push({ top: `${top.toFixed(1)}%`, left: `${left.toFixed(1)}%`, angleDeg });
+  }
+  return positions;
+}
 
 interface PokerTableProps {
   table: Table;
@@ -83,11 +118,27 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
         <div className="absolute inset-x-4 top-4 bottom-4 rounded-[45%/50%] bg-felt border-4 border-gold-dim/40 shadow-[inset_0_0_60px_rgba(0,0,0,0.4)]" />
 
         {/* Pot */}
-        <div className={`absolute ${hasDoubleBoard ? "top-[24%]" : "top-[38%]"} left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center`}>
+        <div className={`absolute ${hasDoubleBoard ? "top-[24%]" : "top-[38%]"} left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-0.5`}>
           <div className="text-[10px] text-muted-foreground uppercase tracking-widest">Pot</div>
-          <div className="text-lg font-bold text-primary">
-            {formatAmount(pot, table.rules.denomination)}
+          <div className="flex items-center gap-1.5">
+            <ChipDots amount={pot} />
+            <div className="text-lg font-bold text-primary">
+              {formatAmount(pot, table.rules.denomination)}
+            </div>
           </div>
+          {/* Side pots */}
+          {table.side_pots.length > 0 && (
+            <div className="flex flex-col items-center gap-0.5 mt-0.5">
+              {table.side_pots.map((sp, i) => (
+                <div key={i} className="flex items-center gap-1 bg-secondary/60 rounded-full px-2 py-0.5">
+                  <ChipDots amount={sp.amount} maxDots={3} />
+                  <span className="text-[9px] text-muted-foreground font-semibold">
+                    Side {i + 1}: {formatAmount(sp.amount, table.rules.denomination)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Community cards */}
@@ -202,41 +253,46 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onSitDown, on
         )}
 
         {/* Player seats — positioned by relative seat index so empty seats don't overlap */}
-        {players.map((player) => {
+        {(() => {
+          const positions = getPortraitPositions(table.rules.max_players);
           const localSeat = localPlayer?.seat ?? 0;
-          const relIdx = (player.seat - localSeat + table.rules.max_players) % table.rules.max_players;
-          const posIdx = relIdx < PORTRAIT_POSITIONS.length ? relIdx : 0;
-          return (
-            <PlayerSeat
-              key={player.session_id}
-              player={player}
-              isLocal={player.session_id === localPlayerId}
-              holeCards={player.session_id === localPlayerId ? holeCards : []}
-              dealerSeat={table.dealer_seat}
-              rules={table.rules}
-              phase={table.phase}
-              position={PORTRAIT_POSITIONS[posIdx] ?? PORTRAIT_POSITIONS[0]}
-              onRevealCard={player.session_id === localPlayerId ? handleRevealCard : undefined}
-              pendingSitOut={player.session_id === localPlayerId ? pendingSitOut : false}
-            />
-          );
-        })}
+          return players.map((player) => {
+            const relIdx = (player.seat - localSeat + table.rules.max_players) % table.rules.max_players;
+            const pos = positions[relIdx] ?? positions[0];
+            return (
+              <PlayerSeat
+                key={player.session_id}
+                player={player}
+                isLocal={player.session_id === localPlayerId}
+                holeCards={player.session_id === localPlayerId ? holeCards : []}
+                dealerSeat={table.dealer_seat}
+                rules={table.rules}
+                phase={table.phase}
+                position={pos}
+                seatAngleDeg={pos.angleDeg}
+                onRevealCard={player.session_id === localPlayerId ? handleRevealCard : undefined}
+                pendingSitOut={player.session_id === localPlayerId ? pendingSitOut : false}
+              />
+            );
+          });
+        })()}
 
         {/* Empty seat prompts */}
         {(() => {
+          const positions = getPortraitPositions(table.rules.max_players);
           const takenSeats = new Set(players.map((p) => p.seat));
           const localSeat = localPlayer?.seat ?? 0;
           return Array.from({ length: table.rules.max_players }, (_, seat) => {
             if (takenSeats.has(seat)) return null;
             const relIdx = (seat - localSeat + table.rules.max_players) % table.rules.max_players;
-            const posIdx = relIdx < PORTRAIT_POSITIONS.length ? relIdx : 0;
+            const position = positions[relIdx] ?? positions[0];
             return (
               <button
                 key={`empty-${seat}`}
                 onClick={() => localPlayer === null ? onSitDown(seat) : undefined}
                 disabled={localPlayer !== null}
                 className="absolute flex items-center justify-center w-10 h-10 rounded-full border-2 border-dashed border-border/50 text-muted-foreground text-[10px] font-medium hover:border-primary hover:text-primary transition-colors disabled:cursor-default disabled:pointer-events-none"
-                style={{ ...PORTRAIT_POSITIONS[posIdx], transform: "translate(-50%, -50%)" }}
+                style={{ ...position, transform: "translate(-50%, -50%)" }}
               >
                 {localPlayer === null ? "SIT" : ""}
               </button>
