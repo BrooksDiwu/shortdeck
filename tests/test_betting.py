@@ -10,7 +10,7 @@ from backend.game.table import Table, Board
 from backend.game.table_rules import TableRules
 from backend.game.deck import Deck
 from backend.game.betting import BettingEngine, SidePot
-from backend.websocket.router import _advance_action, _is_betting_round_complete
+from backend.websocket.router import _advance_action, _is_betting_round_complete, _should_auto_runout
 
 
 def make_rules(betting: str = "no_limit") -> TableRules:
@@ -402,6 +402,21 @@ class TestSplitPot:
         assert table.current_action_seat == 0
         assert table.last_aggressor_seat == 0
 
+    def test_post_blinds_heads_up_skips_all_in_small_blind_for_action(self):
+        """If the SB is all-in from posting, action should move to the remaining active player."""
+        rules = make_rules()
+        a = make_player("A", stack=30, seat=0)  # dealer/button/SB, goes all-in posting 30
+        b = make_player("B", stack=1000, seat=1)  # BB
+
+        table = make_table([a, b], pot=0, rules=rules)
+        table.dealer_seat = 0
+
+        BettingEngine.post_blinds(table)
+
+        assert table.players["A"].status == "all_in"
+        assert table.current_action_seat == 1
+        assert table.last_aggressor_seat == 1
+
     def test_heads_up_preflop_round_waits_for_big_blind_option(self):
         """A limped heads-up pot should not close until the BB takes their option."""
         rules = make_rules()
@@ -437,3 +452,17 @@ class TestSplitPot:
 
         for p in table.players.values():
             assert p.current_bet == 0
+
+    def test_should_auto_runout_when_only_one_active_and_others_all_in(self):
+        a = make_player("A", stack=500, seat=0, status="active")
+        b = make_player("B", stack=0, seat=1, status="all_in")
+        c = make_player("C", stack=0, seat=2, status="all_in")
+        table = make_table([a, b, c], pot=300)
+        assert _should_auto_runout(table)
+
+    def test_should_not_auto_runout_with_multiple_active_players(self):
+        a = make_player("A", stack=500, seat=0, status="active")
+        b = make_player("B", stack=300, seat=1, status="active")
+        c = make_player("C", stack=0, seat=2, status="all_in")
+        table = make_table([a, b, c], pot=300)
+        assert not _should_auto_runout(table)

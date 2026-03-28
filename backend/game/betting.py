@@ -173,6 +173,15 @@ class BettingEngine:
         if bb_player.stack == 0:
             bb_player.status = "all_in"
 
-        table.current_action_seat = seated[utg_idx].seat
-        # Preflop ends after the BB gets their option and action cycles back to the opener.
-        table.last_aggressor_seat = seated[utg_idx].seat
+        # Action opens from UTG (or button in heads-up), but skip players who are
+        # already all-in from posting blinds.
+        opener_idx = utg_idx
+        for offset in range(len(seated)):
+            candidate = seated[(utg_idx + offset) % len(seated)]
+            if candidate.status == "active":
+                opener_idx = (utg_idx + offset) % len(seated)
+                break
+
+        table.current_action_seat = seated[opener_idx].seat
+        # Preflop ends after action cycles back to the opener.
+        table.last_aggressor_seat = seated[opener_idx].seat

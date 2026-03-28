@@ -618,6 +618,8 @@ async def _handle_start_hand(
     table_service: TableService,
 ) -> None:
     """Admin starts a new hand from the waiting or between_hands phase."""
+    round_complete = False
+    table = None
     try:
         async with table_service.acquire_lock(table_id):
             table = await table_service.get_table(table_id)
@@ -653,6 +655,7 @@ async def _handle_start_hand(
             variant = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
             engine = GameEngine(table, table.rules, variant)
             engine.start_hand()
+            round_complete = _is_betting_round_complete(table)
 
             await table_service.save_table(table)
 
@@ -679,6 +682,9 @@ async def _handle_start_hand(
                 "timestamp": datetime.utcnow().isoformat(),
             }
             await table_service.append_event(table_id, event_log)
+
+        if round_complete:
+            await _advance_street_or_showdown(table_id, session_id, table, table_service)
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {
@@ -731,6 +737,15 @@ def _is_betting_round_complete(table) -> bool:
     return table.current_action_seat == table.last_aggressor_seat
 
 
+def _should_auto_runout(table) -> bool:
+    """True when all remaining contenders are all-in except at most one active player."""
+    live_contenders = [p for p in table.players.values() if p.status in ("active", "all_in")]
+    if len(live_contenders) <= 1:
+        return False
+    active_count = sum(1 for p in live_contenders if p.status == "active")
+    return active_count <= 1
+
+
 def _advance_action(table) -> None:
     """Move action to the next active player after an action."""
     active = sorted(
@@ -759,16 +774,39 @@ async def _advance_street_or_showdown(
     street_order = ["preflop", "flop", "turn", "river"]
     current_idx = street_order.index(table.phase) if table.phase in street_order else -1
 
-    # Find next street config
-    next_street = None
-    for sc in streets:
-        sc_idx = street_order.index(sc.name) if sc.name in street_order else -1
-        if sc_idx > current_idx:
-            next_street = sc
-            break
+    def _next_street(after_idx: int):
+        for sc in streets:
+            sc_idx = street_order.index(sc.name) if sc.name in street_order else -1
+            if sc_idx > after_idx:
+                return sc
+        return None
+
+    async def _publish_community_cards() -> None:
+        broadcast_msg = _build_event_message(
+            table, "community_cards", session_id,
+            street=table.phase,
+            state_patch={
+                "phase": table.phase,
+                "board": table.board.to_dict(),
+                "pot": table.pot,
+                "current_action_seat": table.current_action_seat,
+                "players": {sid: {"current_bet": p.current_bet}
+                            for sid, p in table.players.items()},
+            },
+        )
+        await table_service.publish_event(table_id, broadcast_msg)
+
+    next_street = _next_street(current_idx)
+    if next_street is not None and _should_auto_runout(table):
+        # No further player decisions are possible; deal all remaining streets now.
+        while next_street is not None:
+            engine.deal_street(next_street)
+            await table_service.save_table(table)
+            await _publish_community_cards()
+            current_idx = street_order.index(table.phase) if table.phase in street_order else -1
+            next_street = _next_street(current_idx)
 
     active = [p for p in table.players.values() if p.status in ("active", "all_in")]
-
     if next_street is None or len([p for p in active if p.status == "active"]) <= 1:
         # Showdown (showdown() already increments action_seq)
         winnings = engine.showdown()
@@ -824,20 +862,7 @@ async def _advance_street_or_showdown(
             table.current_action_seat = first_to_act.seat
 
         await table_service.save_table(table)
-
-        broadcast_msg = _build_event_message(
-            table, "community_cards", session_id,
-            street=table.phase,
-            state_patch={
-                "phase": table.phase,
-                "board": table.board.to_dict(),
-                "pot": table.pot,
-                "current_action_seat": table.current_action_seat,
-                "players": {sid: {"current_bet": p.current_bet}
-                            for sid, p in table.players.items()},
-            },
-        )
-        await table_service.publish_event(table_id, broadcast_msg)
+        await _publish_community_cards()
 async def _handle_vote(
     table_id: str,
     session_id: str,
