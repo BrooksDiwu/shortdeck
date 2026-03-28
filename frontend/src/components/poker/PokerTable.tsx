@@ -157,7 +157,6 @@ interface PokerTableProps {
 const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen, onSitDown, onStartHand, pendingSitOut }: PokerTableProps) => {
   const sendMessage = useGameStore((s) => s.sendMessage);
   const rabbitHuntCards = useGameStore((s) => s.rabbitHuntCards);
-  const clearRabbitHunt = useGameStore((s) => s.clearRabbitHunt);
   const [confirmRevealIndex, setConfirmRevealIndex] = useState<number | null>(null);
 
   const players = Object.values(table.players).sort((a, b) => a.seat - b.seat);
@@ -290,15 +289,6 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen
                 🐇 Rabbit Hunt
               </button>
             )}
-            {rabbitHuntCards.length > 0 && (
-              <button
-                onClick={clearRabbitHunt}
-                className="px-4 py-1 rounded-full bg-zinc-700/85 text-zinc-300 text-xs font-semibold hover:bg-zinc-600 active:scale-95 transition-all shadow"
-              >
-                Hide Rabbit Hunt
-              </button>
-            )}
-
             {canStart && (
               <>
                 <button

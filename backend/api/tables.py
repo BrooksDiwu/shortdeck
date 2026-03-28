@@ -1,4 +1,4 @@
-
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
@@ -160,6 +160,24 @@ async def rebuy(
             seated_player.stack += body.amount
             table.action_seq += 1
             await table_service.save_table(table)
+            event = {
+                "type": "event",
+                "seq": table.action_seq,
+                "hand": table.hand_number,
+                "event_type": "rebuy_applied",
+                "session_id": player.session_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "state_patch": {
+                    "players": {
+                        player.session_id: {
+                            "stack": seated_player.stack,
+                            "can_request_rebuy": False,
+                        }
+                    }
+                },
+            }
+            await table_service.append_event(table_id, event)
+            await table_service.publish_event(table_id, event)
 
     except HTTPException:
         raise

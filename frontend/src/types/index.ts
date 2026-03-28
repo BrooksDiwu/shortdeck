@@ -32,6 +32,7 @@ export interface Player {
   current_bet: number
   total_in: number
   is_revealed: boolean[]
+  can_request_rebuy?: boolean
 }
 
 export interface SidePot {

@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router-dom'
 import type { Table, TableRulesSchema } from '@/types'
 import { useGameStore } from '@/stores/gameStore'
 import { useSoundStore } from '@/stores/soundStore'
+import { useSessionStore } from '@/stores/sessionStore'
+import { api } from '@/utils/api'
 import Modal from './Modal'
 import RulesForm from './RulesForm'
 
@@ -23,14 +25,18 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
   const navigate = useNavigate()
   const { sendMessage, setActionBarMode, actionBarMode, disconnect } = useGameStore()
   const { muted, toggleMute } = useSoundStore()
+  const token = useSessionStore((s) => s.token)
   const [showRuleChange, setShowRuleChange] = useState(false)
   const [showManagePlayers, setShowManagePlayers] = useState(false)
   const [standUpConfirm, setStandUpConfirm] = useState(false)
+  const [rebuyLoading, setRebuyLoading] = useState(false)
 
   const localPlayer = table && localPlayerId
     ? Object.values(table.players).find((p) => p.session_id === localPlayerId) ?? null
     : null
   const isSittingOut = localPlayer?.status === 'sitting_out'
+  const isBusted = (localPlayer?.stack ?? 0) <= 0
+  const canRequestRebuy = !!(table?.rules.allow_rebuy && isSittingOut && isBusted)
   const isHandActive = table ? !['waiting', 'between_hands'].includes(table.phase) : false
 
   const handleLeave = () => {
@@ -63,6 +69,34 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
     sendMessage({ type: 'sit_in' })
     onCancelSitOut()
     onClose()
+  }
+
+  const handleRequestRebuy = async () => {
+    if (!table || !token || !canRequestRebuy || rebuyLoading) return
+    const suggestedAmount = Math.max(table.rules.big_blind * 100, 1)
+    const raw = window.prompt('Enter rebuy amount', String(suggestedAmount))
+    if (!raw) return
+    const amount = Number.parseInt(raw, 10)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      window.alert('Please enter a valid rebuy amount.')
+      return
+    }
+
+    try {
+      setRebuyLoading(true)
+      await api.rebuy(token, table.table_id, amount)
+      window.alert('Rebuy requested.')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Rebuy request failed'
+      try {
+        const parsed = JSON.parse(message) as { detail?: string }
+        window.alert(parsed.detail ?? message)
+      } catch {
+        window.alert(message)
+      }
+    } finally {
+      setRebuyLoading(false)
+    }
   }
 
   const handlePause = () => {
@@ -222,16 +256,30 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
                 )}
                 {isSeated && isSittingOut && (
                   <>
-                    <MenuItem
-                      label="Sit Back In"
-                      sublabel="You will be dealt in next hand"
-                      icon={
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                        </svg>
-                      }
-                      onClick={handleSitIn}
-                    />
+                    {!isBusted && (
+                      <MenuItem
+                        label="Sit Back In"
+                        sublabel="You will be dealt in next hand"
+                        icon={
+                          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                        }
+                        onClick={handleSitIn}
+                      />
+                    )}
+                    {canRequestRebuy && (
+                      <MenuItem
+                        label={rebuyLoading ? 'Requesting Rebuy...' : 'Request Rebuy'}
+                        sublabel="Add chips so you can sit back in"
+                        icon={
+                          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-2.21 0-4 .895-4 2s1.79 2 4 2 4 .895 4 2-1.79 2-4 2m0-8V6m0 12v-2m9-4a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        }
+                        onClick={() => { void handleRequestRebuy() }}
+                      />
+                    )}
                     <MenuItem
                       label="Stand Up"
                       sublabel="Cash out and return to spectator"

@@ -24,6 +24,7 @@ router = APIRouter()
 
 # Grace period in seconds before auto-action on disconnect
 DISCONNECT_GRACE_SECONDS = 30
+ALL_IN_RUNOUT_STREET_DELAY_SECONDS = 2
 
 test = ""
 # Active grace timers keyed by (table_id, session_id)
@@ -82,7 +83,10 @@ async def _grace_timer_task(
                 await table_service.save_table(table)
                 broadcast_msg = _build_event_message(
                     table, "player_sit_out", session_id,
-                    players={session_id: {"status": "sitting_out"}},
+                    players={session_id: {
+                        "status": "sitting_out",
+                        "can_request_rebuy": table.rules.allow_rebuy and player.stack <= 0,
+                    }},
                 )
                 await table_service.publish_event(table_id, broadcast_msg)
                 logger.info(f"Disconnected player {session_id} sat out at table {table_id} (between hands)")
@@ -135,7 +139,14 @@ async def _grace_timer_task(
                     "pot": table.pot,
                     "current_action_seat": table.current_action_seat,
                     "players": {
-                        sid: {"stack": p.stack, "current_bet": p.current_bet, "status": p.status}
+                        sid: {
+                            "stack": p.stack,
+                            "current_bet": p.current_bet,
+                            "status": p.status,
+                            "can_request_rebuy": (
+                                table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
+                            ),
+                        }
                         for sid, p in table.players.items()
                     },
                 },
@@ -161,6 +172,9 @@ def _build_state_snapshot(table, session_id: str) -> dict:
     players_public = []
     for sid, p in table.players.items():
         pd = p.to_dict()
+        pd["can_request_rebuy"] = (
+            table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
+        )
         if sid != session_id:
             pd["hole_cards"] = []  # mask other players' hole cards
         players_public.append(pd)
@@ -201,6 +215,9 @@ def _build_public_hand_complete_players(table) -> dict[str, dict]:
         players_patch[sid] = {
             "stack": player.stack,
             "status": player.status,
+            "can_request_rebuy": (
+                table.rules.allow_rebuy and player.stack <= 0 and player.status == "sitting_out"
+            ),
             "hole_cards": [c.to_dict() for c in player.hole_cards] if is_shown else [],
             "is_revealed": [True] * len(player.hole_cards) if is_shown else [False] * len(player.hole_cards),
         }
@@ -277,7 +294,11 @@ async def websocket_endpoint(
             if name_collision_id in table.players:
                 old_player = table.players.pop(name_collision_id)
                 old_player.session_id = session_id
-                old_player.status = "active"
+                old_player.status = (
+                    "active"
+                    if table.phase not in ("waiting", "between_hands") and old_player.stack > 0
+                    else "sitting_out"
+                )
                 old_player.disconnect_at = None
                 table.players[session_id] = old_player
 
@@ -359,7 +380,11 @@ async def websocket_endpoint(
             if player.status == "disconnected":
                 # Mid-hand: restore to active so they can continue playing.
                 # Between hands: sit them out so they must explicitly opt back in.
-                new_status = "active" if table.phase not in ("waiting", "between_hands") else "sitting_out"
+                new_status = (
+                    "active"
+                    if table.phase not in ("waiting", "between_hands") and player.stack > 0
+                    else "sitting_out"
+                )
                 player.status = new_status
                 player.disconnect_at = None
                 timer_key = (table_id, session_id)
@@ -371,7 +396,12 @@ async def websocket_endpoint(
                 table.action_seq += 1
                 reconnect_broadcast = _build_event_message(
                     table, "player_reconnected", session_id,
-                    players={session_id: {"status": new_status}},
+                    players={session_id: {
+                        "status": new_status,
+                        "can_request_rebuy": (
+                            table.rules.allow_rebuy and player.stack <= 0 and new_status == "sitting_out"
+                        ),
+                    }},
                 )
             if session_id in table.spectators:
                 table.spectators.remove(session_id)
@@ -597,8 +627,17 @@ async def _handle_action(
                 state_patch={
                     "pot": table.pot,
                     "current_action_seat": table.current_action_seat,
-                    "players": {sid: {"stack": p.stack, "current_bet": p.current_bet, "status": p.status}
-                                for sid, p in table.players.items()},
+                    "players": {
+                        sid: {
+                            "stack": p.stack,
+                            "current_bet": p.current_bet,
+                            "status": p.status,
+                            "can_request_rebuy": (
+                                table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
+                            ),
+                        }
+                        for sid, p in table.players.items()
+                    },
                 },
             )
             await table_service.publish_event(table_id, broadcast_msg)
@@ -805,6 +844,8 @@ async def _advance_street_or_showdown(
             await _publish_community_cards()
             current_idx = street_order.index(table.phase) if table.phase in street_order else -1
             next_street = _next_street(current_idx)
+            if next_street is not None:
+                await asyncio.sleep(ALL_IN_RUNOUT_STREET_DELAY_SECONDS)
 
     active = [p for p in table.players.values() if p.status in ("active", "all_in")]
     if next_street is None or len([p for p in active if p.status == "active"]) <= 1:
@@ -842,8 +883,17 @@ async def _advance_street_or_showdown(
                 state_patch={
                     "phase": table.phase,
                     "dealer_seat": table.dealer_seat,
-                    "players": {sid: {"stack": p.stack, "status": p.status, "current_bet": p.current_bet}
-                                for sid, p in table.players.items()},
+                    "players": {
+                        sid: {
+                            "stack": p.stack,
+                            "status": p.status,
+                            "current_bet": p.current_bet,
+                            "can_request_rebuy": (
+                                table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
+                            ),
+                        }
+                        for sid, p in table.players.items()
+                    },
                 },
             )
             await table_service.publish_event(table_id, end_msg)
@@ -1758,7 +1808,10 @@ async def _handle_sit_out(
 
             broadcast_msg = _build_event_message(
                 table, "player_sit_out", session_id,
-                players={session_id: {"status": "sitting_out"}},
+                players={session_id: {
+                    "status": "sitting_out",
+                    "can_request_rebuy": table.rules.allow_rebuy and player.stack <= 0,
+                }},
             )
             await table_service.publish_event(table_id, broadcast_msg)
 
@@ -1792,13 +1845,21 @@ async def _handle_sit_in(
             if player.status != "sitting_out":
                 return  # already active
 
+            if player.stack <= 0:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "REBUY_REQUIRED",
+                    "message": "You have no chips. Request a rebuy before sitting back in.",
+                })
+                return
+
             player.status = "active"
             table.action_seq += 1
             await table_service.save_table(table)
 
             broadcast_msg = _build_event_message(
                 table, "player_sit_in", session_id,
-                players={session_id: {"status": "active"}},
+                players={session_id: {"status": "active", "can_request_rebuy": False}},
             )
             await table_service.publish_event(table_id, broadcast_msg)
 

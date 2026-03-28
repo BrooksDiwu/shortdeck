@@ -20,6 +20,11 @@ class GameEngine:
         """Shuffle fresh deck, deal hole cards, post blinds, increment hand_number."""
         table = self.table
 
+        # Safety: busted players must stay sat out until they rebuy.
+        for p in table.players.values():
+            if p.stack <= 0 and p.status != "disconnected":
+                p.status = "sitting_out"
+
         # Expire any pending vote that wasn't resolved before this hand
         if table.pending_vote and datetime.utcnow() > table.pending_vote.expires_at:
             table.pending_vote = None
@@ -38,7 +43,7 @@ class GameEngine:
         # Reset player states for new hand
         active_players = [
             p for p in table.players.values()
-            if p.status not in ("sitting_out", "disconnected")
+            if p.status not in ("sitting_out", "disconnected") and p.stack > 0
         ]
         for p in active_players:
             p.status = "active"
@@ -377,7 +382,7 @@ class GameEngine:
         for p in table.players.values():
             if p.status in ("active", "all_in", "folded"):
                 # Players who were auto-folded due to disconnect (disconnect_at is set) sit out
-                p.status = "sitting_out" if p.disconnect_at is not None else "active"
+                p.status = "sitting_out" if p.disconnect_at is not None or p.stack <= 0 else "active"
             p.current_bet = 0
             p.total_in = 0
             p.hole_cards = []
