@@ -25,6 +25,9 @@ dev = [
     "mypy>=1.8.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
