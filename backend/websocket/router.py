@@ -1260,7 +1260,6 @@ async def _handle_unpause_request(
 
             broadcast_msg = _build_event_message(
                 table, "game_unpaused", session_id,
-                session_id=session_id,
             )
             await table_service.publish_event(table_id, broadcast_msg)
 
@@ -1648,7 +1647,7 @@ async def _handle_reject_sit_down(
             # Broadcast to all
             broadcast_msg = _build_event_message(
                 table, "sit_down_rejected", session_id,
-                session_id=target_id,
+                rejected_session_id=target_id,
             )
             await table_service.publish_event(table_id, broadcast_msg)
 
@@ -1861,7 +1860,7 @@ async def _handle_host_stand_up(
 
             broadcast_msg = _build_event_message(
                 table, "player_stood_up", session_id,
-                session_id=target_id,
+                target_session_id=target_id,
                 removed_players=[target_id],
                 player_join_order=table.player_join_order,
                 spectators=table.spectators,
@@ -1919,7 +1918,7 @@ async def _handle_host_remove_player(
 
             broadcast_msg = _build_event_message(
                 table, "player_removed", session_id,
-                session_id=target_id,
+                target_session_id=target_id,
                 removed_players=[target_id],
                 player_join_order=table.player_join_order,
                 spectators=table.spectators,
