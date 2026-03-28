@@ -12,6 +12,7 @@ export interface TableRulesSchema {
   hole_cards_count: number
   extra_hole_card: boolean
   must_use_exactly_two_hole_cards: boolean
+  extra_board: boolean
   extra_flop: boolean
   street_modifiers: Record<string, number>
   max_players: number

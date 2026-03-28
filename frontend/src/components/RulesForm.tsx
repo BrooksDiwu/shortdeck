@@ -10,6 +10,7 @@ const DEFAULT_RULES: TableRulesSchema = {
   hole_cards_count: 2,
   extra_hole_card: false,
   must_use_exactly_two_hole_cards: false,
+  extra_board: false,
   extra_flop: false,
   street_modifiers: {},
   max_players: 9,
@@ -54,15 +55,20 @@ export default function RulesForm({
   const computeCap = (r: TableRulesSchema): number => {
     const deck = r.variant === 'shortdeck' ? 36 : 52
     const base: Record<string, number> = { flop: 3, turn: 1, river: 1 }
-    const boards = r.extra_flop ? 2 : 1
+    const boards = (r.extra_board || r.extra_flop) ? 2 : 1
     const boardCards = Object.entries(base).reduce((sum, [s, b]) => sum + Math.max(0, b + (r.street_modifiers[s] ?? 0)), 0)
     const hole = r.hole_cards_count + (r.extra_hole_card ? 1 : 0)
-    return Math.min(9, Math.floor((deck - 3 - boards * boardCards) / hole))
+    return Math.min(9, Math.floor((deck - boards * boardCards) / hole))
   }
 
   const set = <K extends keyof TableRulesSchema>(key: K, value: TableRulesSchema[K]) => {
     setRules((r) => {
-      const next = { ...r, [key]: value }
+      const next = { ...r, [key]: value } as TableRulesSchema
+      if (key === 'extra_board' || key === 'extra_flop') {
+        const enabled = Boolean(value)
+        next.extra_board = enabled
+        next.extra_flop = enabled
+      }
       const cap = computeCap(next)
       return { ...next, max_players: Math.min(next.max_players, cap) }
     })
@@ -239,7 +245,7 @@ export default function RulesForm({
           {[
             { key: 'extra_hole_card', label: 'Extra Hole Card' },
             { key: 'must_use_exactly_two_hole_cards', label: 'Must Use Exactly 2 Hole Cards' },
-            { key: 'extra_flop', label: 'Extra Flop' },
+            { key: 'extra_board', label: 'Extra Board' },
             { key: 'allow_rebuy', label: 'Allow Rebuy' },
             { key: 'timer_enabled', label: 'Turn Timer' },
           ].map(({ key, label }) => (

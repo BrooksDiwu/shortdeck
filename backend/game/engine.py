@@ -69,7 +69,7 @@ class GameEngine:
         pass
 
     def deal_street(self, street: StreetConfig) -> None:
-        """Deal community cards, handle extra_flop."""
+        """Deal community cards, handling optional secondary board."""
         table = self.table
         n = street.base_cards
         if n <= 0:
@@ -77,14 +77,14 @@ class GameEngine:
         new_cards = table.deck.deal(n)
         table.board.primary.extend(new_cards)
 
-        if self.rules.extra_flop and street.name == "flop":
+        if self.rules.extra_board and street.name in ("flop", "turn", "river"):
             secondary_cards = table.deck.deal(n)
             table.board.secondary.extend(secondary_cards)
 
         table.current_hand_actions.append(
             f"*** {street.name.upper()} *** [{self._format_cards(new_cards)}]"
         )
-        if self.rules.extra_flop and street.name == "flop":
+        if self.rules.extra_board and street.name in ("flop", "turn", "river"):
             dealt_secondary = table.board.secondary[-n:] if n > 0 else []
             table.current_hand_actions.append(
                 f"*** {street.name.upper()} (Board 2) *** [{self._format_cards(dealt_secondary)}]"
@@ -140,8 +140,8 @@ class GameEngine:
 
         secondary_results: dict[str, HandResult] = {}
 
-        # If extra_flop: split pot between two boards
-        if self.rules.extra_flop and table.board.secondary:
+        # If extra board: split pot between two boards
+        if self.rules.extra_board and table.board.secondary:
             total = table.pot
             half_primary = total // 2
             half_secondary = total - half_primary  # half_secondary gets the extra chip

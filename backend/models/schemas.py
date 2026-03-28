@@ -17,6 +17,8 @@ class TableRulesSchema(BaseModel):
     hole_cards_count: int = 2
     extra_hole_card: bool = False
     must_use_exactly_two_hole_cards: bool = False
+    extra_board: bool = False
+    # Backward-compat alias for extra_board.
     extra_flop: bool = False
     street_modifiers: dict[str, int] = Field(default_factory=dict)
     max_players: int = Field(default=9, ge=2)
@@ -26,6 +28,10 @@ class TableRulesSchema(BaseModel):
 
     @model_validator(mode="after")
     def _validate_rules(self) -> "TableRulesSchema":
+        enabled = bool(self.extra_board or self.extra_flop)
+        self.extra_board = enabled
+        self.extra_flop = enabled
+
         # Validate street modifier ranges:
         #   flop base=3, allowed range 1–5  → mod in [-2, +2]
         #   turn base=1, allowed range 0–3  → mod in [-1, +2]

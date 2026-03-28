@@ -223,8 +223,8 @@ class TestDealStreet:
         assert len(engine.table.board.primary) == 3
         assert len(engine.table.board.secondary) == 3
 
-    def test_extra_flop_only_on_flop_street(self):
-        """extra_flop should NOT deal secondary on turn or river."""
+    def test_extra_flop_deals_secondary_turn_and_river(self):
+        """Double-board mode should deal secondary flop/turn/river."""
         from backend.game.table_rules import StreetConfig
         rules = TableRules(
             variant="holdem", betting="no_limit", small_blind=50, big_blind=100,
@@ -234,9 +234,24 @@ class TestDealStreet:
         engine.start_hand()
         engine.deal_street(StreetConfig(name="flop", base_cards=3))
         engine.deal_street(StreetConfig(name="turn", base_cards=1))
-        # Secondary should still be 3 (from flop), not 4
-        assert len(engine.table.board.secondary) == 3
-        assert len(engine.table.board.primary) == 4
+        engine.deal_street(StreetConfig(name="river", base_cards=1))
+        assert len(engine.table.board.secondary) == 5
+        assert len(engine.table.board.primary) == 5
+
+    def test_extra_board_alias_deals_secondary_turn_and_river(self):
+        """extra_board should be accepted as the canonical flag."""
+        from backend.game.table_rules import StreetConfig
+        rules = TableRules(
+            variant="holdem", betting="no_limit", small_blind=50, big_blind=100,
+            extra_board=True,
+        )
+        engine = _make_engine(rules=rules)
+        engine.start_hand()
+        engine.deal_street(StreetConfig(name="flop", base_cards=3))
+        engine.deal_street(StreetConfig(name="turn", base_cards=1))
+        engine.deal_street(StreetConfig(name="river", base_cards=1))
+        assert len(engine.table.board.secondary) == 5
+        assert len(engine.table.board.primary) == 5
 
     def test_deal_zero_cards_noop(self):
         from backend.game.table_rules import StreetConfig
@@ -810,18 +825,16 @@ class TestShortdeckPLOShowdown:
 #   max_players = (deck_size - community_cards) // hole_cards_count
 #
 # Deck sizes:  holdem=52, shortdeck=36
-# Community:   single board=5 (3+1+1), extra_flop=8 (5 primary + 3 secondary flop)
+# Community:   single board=5 (3+1+1), extra board=10 (5 primary + 5 secondary)
 # Hole cards:  holdem=2, PLO=4
 #
 # Derived limits:
 #   PLO shortdeck  1 board  -> (36-5)//4  = 7
-#   PLO shortdeck  2 boards -> (36-8)//4  = 7
+#   PLO shortdeck  2 boards -> (36-10)//4 = 6
 #   PLO holdem     1 board  -> (52-5)//4  = 11 (schema cap of 9 applies)
-#   PLO holdem     2 boards -> (52-8)//4  = 11 (schema cap of 9 applies)
+#   PLO holdem     2 boards -> (52-10)//4 = 10 (schema cap of 9 applies)
 #
-# NOTE: If burn cards (3 per board) are ever introduced the limits become:
-#   PLO shortdeck  1 board  -> (36-5-3)//4  = 7
-#   PLO shortdeck  2 boards -> (36-10-6)//4 = 5
+# NOTE: If burn cards are ever introduced, limits should be updated accordingly.
 # ===================================================================
 
 class TestTableRulesMaxCapacity:
@@ -839,7 +852,7 @@ class TestTableRulesMaxCapacity:
         )
         assert rules.compute_max_players() == 7
 
-    def test_plo_shortdeck_two_boards_max_7(self):
+    def test_plo_shortdeck_two_boards_max_6(self):
         rules = TableRules(
             variant="shortdeck",
             betting="pot_limit",
@@ -849,7 +862,7 @@ class TestTableRulesMaxCapacity:
             must_use_exactly_two_hole_cards=True,
             extra_flop=True,
         )
-        assert rules.compute_max_players() == 7
+        assert rules.compute_max_players() == 6
 
     def test_holdem_shortdeck_single_board_max_9(self):
         """Shortdeck holdem (2 hole cards): (36-5)//2=15, schema-capped to 9."""
@@ -912,9 +925,9 @@ class TestStartHandCardBudget:
         # After dealing hole cards there are fewer than 5 cards left — community cannot be dealt.
         assert engine.table.deck.remaining < 5
 
-    def test_plo_shortdeck_two_boards_7_players_deck_sufficient(self):
-        """7 players × 4 cards = 28; 36-28=8 remaining covers 5+3=8 community cards exactly."""
-        engine = self._make_plo_shortdeck_engine(n_players=7, extra_flop=True)
+    def test_plo_shortdeck_two_boards_6_players_deck_sufficient(self):
+        """6 players × 4 cards = 24; 36-24=12 remaining covers 5+5=10 community cards."""
+        engine = self._make_plo_shortdeck_engine(n_players=6, extra_flop=True)
         engine.start_hand()
         from backend.game.table_rules import StreetConfig
         engine.deal_street(StreetConfig(name="flop", base_cards=3))
@@ -922,10 +935,10 @@ class TestStartHandCardBudget:
         engine.deal_street(StreetConfig(name="river", base_cards=1))
         # All community cards dealt; both boards populated
         assert len(engine.table.board.primary) == 5
-        assert len(engine.table.board.secondary) == 3
+        assert len(engine.table.board.secondary) == 5
 
-    def test_plo_shortdeck_two_boards_8_players_deck_exhausted(self):
-        """8 players × 4 = 32 hole cards; only 4 left — cannot deal 5+3=8 community cards."""
-        engine = self._make_plo_shortdeck_engine(n_players=8, extra_flop=True)
+    def test_plo_shortdeck_two_boards_7_players_deck_exhausted(self):
+        """7 players × 4 = 28 hole cards; only 8 left — cannot deal 5+5=10 community cards."""
+        engine = self._make_plo_shortdeck_engine(n_players=7, extra_flop=True)
         engine.start_hand()
-        assert engine.table.deck.remaining < 8
+        assert engine.table.deck.remaining < 10

@@ -24,12 +24,20 @@ class TableRules:
     hole_cards_count: int = 2
     extra_hole_card: bool = False
     must_use_exactly_two_hole_cards: bool = False
+    extra_board: bool = False
+    # Backward-compat alias for extra_board.
     extra_flop: bool = False
     street_modifiers: dict[str, int] = field(default_factory=dict)
     max_players: int = 9
     allow_rebuy: bool = True
     timer_enabled: bool = False
     timer_seconds: int = 30
+
+    def __post_init__(self) -> None:
+        # Support both names; treat either as enabling a full secondary board.
+        enabled = bool(self.extra_board or self.extra_flop)
+        self.extra_board = enabled
+        self.extra_flop = enabled
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +49,7 @@ class TableRules:
             "hole_cards_count": self.hole_cards_count,
             "extra_hole_card": self.extra_hole_card,
             "must_use_exactly_two_hole_cards": self.must_use_exactly_two_hole_cards,
+            "extra_board": self.extra_board,
             "extra_flop": self.extra_flop,
             "street_modifiers": self.street_modifiers,
             "max_players": self.max_players,
@@ -55,12 +64,7 @@ class TableRules:
             max(0, base + self.street_modifiers.get(street, 0))
             for street, base in _BASE_STREET_CARDS.items()
         )
-        secondary_flop_cards = (
-            max(0, _BASE_STREET_CARDS["flop"] + self.street_modifiers.get("flop", 0))
-            if self.extra_flop
-            else 0
-        )
-        community_cards = primary_board_cards + secondary_flop_cards
+        community_cards = primary_board_cards * (2 if self.extra_board else 1)
         hole = self.hole_cards_count + (1 if self.extra_hole_card else 0)
         budget = (deck - _BURN_CARDS - community_cards) // hole
         return min(budget, _ABSOLUTE_MAX)
@@ -76,6 +80,7 @@ class TableRules:
             hole_cards_count=data.get("hole_cards_count", 2),
             extra_hole_card=data.get("extra_hole_card", False),
             must_use_exactly_two_hole_cards=data.get("must_use_exactly_two_hole_cards", False),
+            extra_board=data.get("extra_board", data.get("extra_flop", False)),
             extra_flop=data.get("extra_flop", False),
             street_modifiers=data.get("street_modifiers", {}),
             max_players=data.get("max_players", 9),
