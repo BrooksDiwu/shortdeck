@@ -126,18 +126,21 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
     onClick,
     danger = false,
     sublabel,
+    disabled = false,
   }: {
     label: string
     icon: React.ReactNode
     onClick: () => void
     danger?: boolean
     sublabel?: string
+    disabled?: boolean
   }) => (
     <button
+      disabled={disabled}
       onClick={onClick}
       className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-800 transition-colors text-left rounded-lg ${
         danger ? 'text-red-400 hover:text-red-300' : 'text-zinc-200 hover:text-white'
-      }`}
+      } ${disabled ? 'opacity-60 cursor-not-allowed hover:bg-transparent' : ''}`}
     >
       <span className="w-5 h-5 flex items-center justify-center shrink-0 opacity-70">{icon}</span>
       <div>
@@ -266,7 +269,8 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                           </svg>
                         }
-                        onClick={isSitInQueued ? undefined : handleSitIn}
+                        onClick={handleSitIn}
+                        disabled={isSitInQueued}
                       />
                     )}
                     {canRequestRebuy && (

@@ -72,19 +72,26 @@ const PlayerSeat = ({
     onRevealCard(i);
   };
 
-  const avatarSize = isLocal ? "w-12 h-12" : "w-10 h-10";
+  const avatarSize = isLocal ? "w-14 h-14" : "w-12 h-12";
 
   const avatar = (
     <div
       className={cn(
-        "rounded-full flex items-center justify-center text-xs font-bold border-2 relative flex-shrink-0",
+        "rounded-full flex items-center justify-center border-2 relative flex-shrink-0 text-center p-1",
         avatarSize,
         folded ? "bg-muted border-muted-foreground/30 opacity-50" : "bg-secondary border-border",
         isLocal && "border-primary",
         player.status === "disconnected" && "opacity-40"
       )}
     >
-      <span className="text-foreground">{player.name.slice(0, 2).toUpperCase()}</span>
+      <div className="leading-tight">
+        <div className="text-[8px] font-semibold text-foreground max-w-[44px] truncate">
+          {player.name}
+        </div>
+        <div className="text-[8px] font-bold text-primary whitespace-nowrap">
+          {formatAmount(player.stack, rules.denomination)}
+        </div>
+      </div>
       {isDealer && (
         <span className="absolute -top-1 -right-1 bg-primary text-primary-foreground text-[8px] w-4 h-4 rounded-full flex items-center justify-center font-bold">
           D
@@ -103,18 +110,9 @@ const PlayerSeat = ({
     </div>
   );
 
-  const nameLabel = (
-    <div className="text-[10px] text-foreground font-medium text-center leading-tight max-w-[56px] truncate">
-      {player.name}
-    </div>
-  );
-
   const chipStackEl = (
-    <div className="flex flex-col items-center gap-0.5">
+    <div className="flex items-center">
       <ChipStack amount={player.stack} size="sm" />
-      <div className="text-[9px] text-primary font-bold whitespace-nowrap">
-        {formatAmount(player.stack, rules.denomination)}
-      </div>
     </div>
   );
 
@@ -186,7 +184,7 @@ const PlayerSeat = ({
 
   if (isLocal) {
     // Local player at bottom: bet above, avatar with visual stack to the right,
-    // name + stack amount as a label between avatar and cards.
+    // cards below.
     return (
       <div className="absolute" style={{ ...position, transform: "translate(-50%, -50%)" }}>
         {/* Bet — above the avatar */}
@@ -203,15 +201,6 @@ const PlayerSeat = ({
               <ChipStack amount={player.stack} size="sm" />
             </div>
           </div>
-          {/* Name + stack amount between avatar and cards */}
-          <div className="flex flex-col items-center mt-0.5">
-            <div className="text-[10px] text-foreground font-medium leading-tight truncate max-w-[80px] text-center">
-              {player.name}
-            </div>
-            <div className="text-[9px] text-primary font-bold">
-              {formatAmount(player.stack, rules.denomination)}
-            </div>
-          </div>
           {/* Cards below */}
           {cardEls && <div className="mt-0.5">{cardEls}</div>}
         </div>
@@ -220,11 +209,10 @@ const PlayerSeat = ({
   }
 
   if (zone === "top") {
-    // Top players: stack → name → avatar → cards → bet
+    // Top players: stack → avatar → cards → bet
     return (
       <div className="absolute flex flex-col items-center gap-0.5" style={{ ...position, transform: "translate(-50%, -50%)" }}>
         {chipStackEl}
-        {nameLabel}
         {avatar}
         {cardEls && <div className="mt-0.5">{cardEls}</div>}
         {betEl && <div className="mt-0.5">{betEl}</div>}
@@ -233,12 +221,11 @@ const PlayerSeat = ({
   }
 
   if (zone === "left") {
-    // Left-side players: stack on far left → [name+avatar+cards column] → bet on right (toward center)
+    // Left-side players: stack on far left → [avatar+cards column] → bet on right (toward center)
     return (
       <div className="absolute flex flex-row items-center gap-1.5" style={{ ...position, transform: "translate(-50%, -50%)" }}>
         <div className="flex-shrink-0">{chipStackEl}</div>
         <div className="flex flex-col items-center gap-0.5">
-          {nameLabel}
           {avatar}
           {cardEls && <div className="mt-0.5">{cardEls}</div>}
         </div>
@@ -247,12 +234,11 @@ const PlayerSeat = ({
     );
   }
 
-  // right zone: bet on left (toward center) → [name+avatar+cards column] → stack on far right
+  // right zone: bet on left (toward center) → [avatar+cards column] → stack on far right
   return (
     <div className="absolute flex flex-row items-center gap-1.5" style={{ ...position, transform: "translate(-50%, -50%)" }}>
       {betEl && <div className="flex-shrink-0">{betEl}</div>}
       <div className="flex flex-col items-center gap-0.5">
-        {nameLabel}
         {avatar}
         {cardEls && <div className="mt-0.5">{cardEls}</div>}
       </div>
