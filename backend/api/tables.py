@@ -59,12 +59,6 @@ async def create_table(
     asyncio.create_task(table_service.persist_table_if_missing(
         table.table_id, _json.dumps(rules.to_dict())
     ))
-    asyncio.create_task(table_service.persist_stack_transaction(
-        table_id=table.table_id,
-        session_id=player.session_id,
-        transaction_type="buyin",
-        amount=table.players[player.session_id].stack,
-    ))
     return TableResponse(
         table_id=table.table_id,
         name=table.name,
