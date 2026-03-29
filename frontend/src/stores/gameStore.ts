@@ -83,6 +83,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     ws.onclose = (event: CloseEvent) => {
+      console.error('[ws.onclose] code:', event.code, 'reason:', event.reason, 'wasClean:', event.wasClean, new Error().stack)
       if (event.code === 4003) {
         set({ connectionState: 'error', connectionError: event.reason || 'Name already taken by a connected player', ws: null })
       } else {
@@ -90,7 +91,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
 
-    ws.onerror = () => {
+    ws.onerror = (event) => {
+      console.error('[ws.onerror]', event)
       set({ connectionState: 'error' })
     }
 
@@ -106,7 +108,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const { localSeq, sendMessage } = get()
       const sound = useSoundStore.getState()
 
-      console.log('[ws.onmessage] type:', msg.type, JSON.stringify(msg))
+      console.log('[ws.onmessage] type:', msg.type, 'seq:', (msg as Record<string,unknown>).seq, JSON.stringify(msg).slice(0, 200))
 
       if (msg.type === 'chat_message') {
         set((state) => ({
