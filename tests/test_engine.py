@@ -461,6 +461,40 @@ class TestShowdown:
         assert "*** HAND ENDS BEFORE SHOWDOWN ***" in entry.action_lines
         assert any("B: wins 200" == line for line in entry.action_lines)
 
+    def test_determine_showdown_order_uses_last_aggressor_when_river_bet(self):
+        players = {
+            "A": _make_player("A", seat=0, stack=900),
+            "B": _make_player("B", seat=1, stack=900),
+            "C": _make_player("C", seat=2, stack=900),
+        }
+        rules = TableRules(variant="holdem", betting="no_limit", small_blind=50, big_blind=100)
+        table = _make_table(players, rules, dealer_seat=0, pot=300, phase="river")
+        table.last_aggressor_seat = 2
+        table.players["A"].current_bet = 100
+        table.players["B"].current_bet = 100
+        table.players["C"].current_bet = 100
+        engine = GameEngine(table, rules, HoldemVariant())
+
+        order = engine.determine_showdown_order(["A", "B", "C"])
+        assert order == ["C", "A", "B"]
+
+    def test_determine_showdown_order_uses_left_of_dealer_when_no_aggressor(self):
+        players = {
+            "A": _make_player("A", seat=0, stack=900),
+            "B": _make_player("B", seat=1, stack=900),
+            "C": _make_player("C", seat=2, stack=900),
+        }
+        rules = TableRules(variant="holdem", betting="no_limit", small_blind=50, big_blind=100)
+        table = _make_table(players, rules, dealer_seat=0, pot=300, phase="river")
+        table.last_aggressor_seat = 2  # check-around placeholder, not real aggression
+        table.players["A"].current_bet = 0
+        table.players["B"].current_bet = 0
+        table.players["C"].current_bet = 0
+        engine = GameEngine(table, rules, HoldemVariant())
+
+        order = engine.determine_showdown_order(["A", "B", "C"])
+        assert order == ["B", "C", "A"]
+
 
 # ===================================================================
 # 5. end_hand
@@ -504,6 +538,16 @@ class TestEndHand:
             assert p.current_bet == 0
             assert p.total_in == 0
             assert p.hole_cards == []
+
+    def test_busted_player_is_forced_to_sit_out(self):
+        engine = _make_engine()
+        busted = engine.table.players["A"]
+        busted.status = "all_in"
+        busted.stack = 0
+
+        engine.end_hand()
+
+        assert engine.table.players["A"].status == "sitting_out"
 
     def test_sets_phase_between_hands(self):
         engine = _make_engine()

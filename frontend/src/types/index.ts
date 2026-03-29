@@ -34,6 +34,7 @@ export interface Player {
   is_revealed: boolean[]
   can_request_rebuy?: boolean
   buy_in: number
+  sit_in_next_hand?: boolean
 }
 
 export interface LeaderboardEntry {
@@ -116,6 +117,7 @@ export interface Table {
 
 export interface TableResponse {
   table_id: string
+  name: string
   rules: TableRulesSchema
   phase: string
   player_count: number

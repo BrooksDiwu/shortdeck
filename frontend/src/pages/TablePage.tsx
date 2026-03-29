@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -9,6 +9,7 @@ import VoteBanner from '@/components/VoteBanner'
 import PauseBanner from '@/components/PauseBanner'
 import OptionsDrawer from '@/components/OptionsDrawer'
 import SitDownModal from '@/components/SitDownModal'
+import { api } from '@/utils/api'
 import HostApprovalBanner from '@/components/HostApprovalBanner'
 import ConnectionStatus from '@/components/ConnectionStatus'
 import HandLogModal from '@/components/poker/HandLogModal'
@@ -119,8 +120,27 @@ export default function TablePage() {
     }
   }, [connectionError, navigate, clearSession])
 
-  const isAdmin = localPlayer?.is_admin ?? false
+  const isAdmin = table?.admin_id === localPlayerId
   const isSeated = localPlayer !== null
+
+  // Auto-open sit modal for admin if not yet seated
+  const adminSitOpenedRef = useRef(false)
+  useEffect(() => {
+    if (!table || !localPlayerId) return
+    if (table.admin_id !== localPlayerId) return
+    const alreadySeated = Object.values(table.players).some(p => p.session_id === localPlayerId)
+    if (alreadySeated) {
+      adminSitOpenedRef.current = true // mark as done so we don't re-open on reconnect
+      return
+    }
+    if (adminSitOpenedRef.current) return
+    if (sitDownOpen) return
+    adminSitOpenedRef.current = true
+    const takenSeats = new Set(Object.values(table.players).map(p => p.seat))
+    const firstFree = Array.from({ length: table.rules.max_players }, (_, i) => i).find(s => !takenSeats.has(s)) ?? 0
+    setSitSeat(firstFree)
+    setSitDownOpen(true)
+  }, [table?.admin_id, localPlayerId, Object.keys(table?.players ?? {}).length])
 
   // Debug logging
   console.log('[TablePage] isAdmin:', isAdmin, 'localPlayerId:', localPlayerId, 'pending_sit_requests:', table?.pending_sit_requests)
@@ -130,8 +150,17 @@ export default function TablePage() {
     setSitDownOpen(true)
   }
 
-  const handleSitDownConfirm = (seat: number, chips: number) => {
-    sendMessage({ type: 'sit_down_request', seat, chips })
+  const handleSitDownConfirm = async (seat: number, chips: number) => {
+    if (isBustRebuy) {
+      if (!token || !tableId) return
+      try {
+        await api.rebuy(token, tableId, chips)
+      } catch (_e) {
+        // error shown via server error toast
+      }
+    } else {
+      sendMessage({ type: 'sit_down_request', seat, chips })
+    }
   }
 
   const handleVote = (direction: 'for' | 'against') => {
@@ -257,9 +286,10 @@ export default function TablePage() {
       <SitDownModal
         open={sitDownOpen}
         seat={sitSeat}
-        onConfirm={handleSitDownConfirm}
+        onConfirm={(seat, chips) => void handleSitDownConfirm(seat, chips)}
         onClose={() => { setSitDownOpen(false); setIsBustRebuy(false) }}
         isRebuy={isBustRebuy}
+        isAdmin={isAdmin && !isBustRebuy}
       />
 
       {table && (

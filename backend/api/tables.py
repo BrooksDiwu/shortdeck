@@ -55,7 +55,7 @@ async def create_table(
             detail=f"max_players ({rules.max_players}) exceeds card-budget cap of {cap}",
         )
     import json as _json
-    table = await table_service.create_table(rules, creator_id=player.session_id, creator=player)
+    table = await table_service.create_table(rules, creator_id=player.session_id, creator=player, name=body.name)
     asyncio.create_task(table_service.persist_table_if_missing(
         table.table_id, _json.dumps(rules.to_dict())
     ))
@@ -67,6 +67,7 @@ async def create_table(
     ))
     return TableResponse(
         table_id=table.table_id,
+        name=table.name,
         rules=body.rules,
         phase=table.phase,
         player_count=len(table.players),
@@ -80,6 +81,7 @@ async def list_tables() -> list[TableResponse]:
     return [
         TableResponse(
             table_id=t.table_id,
+            name=t.name,
             rules=_rules_to_schema(t.rules),
             phase=t.phase,
             player_count=len(t.players),
@@ -97,6 +99,7 @@ async def get_table(table_id: str) -> TableResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Table not found")
     return TableResponse(
         table_id=table.table_id,
+        name=table.name,
         rules=_rules_to_schema(table.rules),
         phase=table.phase,
         player_count=len(table.players),

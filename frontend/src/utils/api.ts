@@ -17,11 +17,11 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 export const api = {
   getTables: () => apiFetch<TableResponse[]>('/api/v1/tables'),
 
-  createTable: (token: string, rules: TableRulesSchema) =>
+  createTable: (token: string, rules: TableRulesSchema, name?: string) =>
     apiFetch<TableResponse>('/api/v1/tables', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ rules }),
+      body: JSON.stringify({ rules, name: name ?? '' }),
     }),
 
   joinTable: (token: string, tableId: string) =>

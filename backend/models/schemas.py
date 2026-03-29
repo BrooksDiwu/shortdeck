@@ -57,8 +57,10 @@ class TableRulesSchema(BaseModel):
         return self
 class TableCreate(BaseModel):
     rules: TableRulesSchema
+    name: str = ""
 class TableResponse(BaseModel):
     table_id: str
+    name: str = ""
     rules: TableRulesSchema
     phase: str
     player_count: int

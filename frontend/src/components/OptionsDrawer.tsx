@@ -35,6 +35,7 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
     ? Object.values(table.players).find((p) => p.session_id === localPlayerId) ?? null
     : null
   const isSittingOut = localPlayer?.status === 'sitting_out'
+  const isSitInQueued = !!(localPlayer?.sit_in_next_hand)
   const isBusted = (localPlayer?.stack ?? 0) <= 0
   const canRequestRebuy = !!(table?.rules.allow_rebuy && isSittingOut && isBusted)
   const isHandActive = table ? !['waiting', 'between_hands'].includes(table.phase) : false
@@ -258,14 +259,14 @@ export default function OptionsDrawer({ open, onClose, table, localPlayerId, isS
                   <>
                     {!isBusted && (
                       <MenuItem
-                        label="Sit Back In"
-                        sublabel="You will be dealt in next hand"
+                        label={isSitInQueued ? 'Sitting In Next Hand' : 'Sit Back In'}
+                        sublabel={isSitInQueued ? 'Queued — will be dealt in next hand' : 'You will be dealt in next hand'}
                         icon={
                           <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                           </svg>
                         }
-                        onClick={handleSitIn}
+                        onClick={isSitInQueued ? undefined : handleSitIn}
                       />
                     )}
                     {canRequestRebuy && (

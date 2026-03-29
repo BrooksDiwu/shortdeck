@@ -11,6 +11,7 @@ from ..services.session_service import SessionService
 from ..services.table_service import TableService
 from ..game.betting import BettingEngine
 from ..game.engine import GameEngine
+from ..game.hand_evaluator import HandEvaluator
 from ..game.table import ModeVote
 from ..game.table_rules import TableRules
 from ..game.player import Player
@@ -29,6 +30,8 @@ ALL_IN_RUNOUT_STREET_DELAY_SECONDS = 2
 test = ""
 # Active grace timers keyed by (table_id, session_id)
 _grace_timers: dict[tuple[str, str], asyncio.Task] = {}
+_showdown_timers: dict[str, asyncio.Task] = {}
+SHOWDOWN_DECISION_SECONDS = 5
 
 
 def _format_action_line(player_name: str, action: str, amount: int, auto: bool = False) -> str:
@@ -46,6 +49,60 @@ def _format_action_line(player_name: str, action: str, amount: int, auto: bool =
     if action == "all_in":
         return f"{prefix}is all-in for {amount}{suffix}"
     return f"{prefix}{action} {amount}{suffix}"
+
+
+def _current_showdown_session_id(table) -> str | None:
+    idx = table.showdown_index
+    while idx < len(table.showdown_order):
+        sid = table.showdown_order[idx]
+        if sid not in table.showdown_shown and sid not in table.showdown_mucked:
+            return sid
+        idx += 1
+    return None
+
+
+def _normalize_showdown_index(table) -> None:
+    while table.showdown_index < len(table.showdown_order):
+        sid = table.showdown_order[table.showdown_index]
+        if sid not in table.showdown_shown and sid not in table.showdown_mucked:
+            break
+        table.showdown_index += 1
+
+
+def _showdown_hand_result(table, session_id: str):
+    player = table.players.get(session_id)
+    if player is None:
+        return None
+    return HandEvaluator.evaluate(player.hole_cards, table.board.primary, table.rules)
+
+
+def _can_muck_against_top_shown(table, session_id: str) -> bool:
+    top_sid = table.showdown_top_shown_session_id
+    if top_sid is None:
+        return False
+    if top_sid not in table.players or session_id not in table.players:
+        return False
+
+    challenger = _showdown_hand_result(table, session_id)
+    top_result = _showdown_hand_result(table, top_sid)
+    if challenger is None or top_result is None:
+        return False
+    return HandEvaluator.compare(challenger, top_result) <= 0
+
+
+def _showdown_complete(table) -> bool:
+    return len(table.showdown_shown) + len(table.showdown_mucked) >= len(table.showdown_order)
+
+
+def _showdown_state_patch(table) -> dict:
+    return {
+        "showdown_order": list(table.showdown_order),
+        "showdown_index": table.showdown_index,
+        "showdown_shown": list(table.showdown_shown),
+        "showdown_mucked": list(table.showdown_mucked),
+        "showdown_top_shown_session_id": table.showdown_top_shown_session_id,
+        "showdown_current_session_id": _current_showdown_session_id(table),
+    }
 
 
 async def _grace_timer_task(
@@ -169,14 +226,15 @@ async def _grace_timer_task(
 
 def _build_state_snapshot(table, session_id: str) -> dict:
     """Build a full state snapshot message, hiding other players' hole cards."""
+    shown_set = set(table.showdown_shown)
     players_public = []
     for sid, p in table.players.items():
         pd = p.to_dict()
         pd["can_request_rebuy"] = (
             table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
         )
-        if sid != session_id:
-            pd["hole_cards"] = []  # mask other players' hole cards
+        if sid != session_id and sid not in shown_set:
+            pd["hole_cards"] = []  # mask other players' hole cards unless shown at showdown
         players_public.append(pd)
 
     return {
@@ -202,14 +260,12 @@ def _build_state_snapshot(table, session_id: str) -> dict:
         "hand_log": [entry.to_dict() for entry in table.hand_log],
         "leaderboard": table.leaderboard,
         "pending_rebuys": table.pending_rebuys,
+        **_showdown_state_patch(table),
     }
 
 
 def _build_public_hand_complete_players(table) -> dict[str, dict]:
-    latest_entry = table.hand_log[0] if table.hand_log else None
-    shown_player_ids = {
-        hand.session_id for hand in latest_entry.shown_hands
-    } if latest_entry and latest_entry.showdown else set()
+    shown_player_ids = set(table.showdown_shown)
 
     players_patch: dict[str, dict] = {}
     for sid, player in table.players.items():
@@ -512,6 +568,8 @@ async def _dispatch_message(
         await _handle_reveal_card(table_id, session_id, msg, table_service)
     elif msg_type == "rabbit_hunt_request":
         await _handle_rabbit_hunt_request(table_id, session_id, msg, table_service)
+    elif msg_type == "showdown_decision":
+        await _handle_showdown_decision(table_id, session_id, msg, table_service)
     elif msg_type == "sit_down_request":
         await _handle_sit_down_request(table_id, session_id, msg, table_service)
     elif msg_type == "approve_sit_down":
@@ -865,6 +923,128 @@ async def _persist_hand_to_db(table, table_service: TableService) -> None:
         logger.exception(f"Failed to persist hand {table.hand_number} for table {table.table_id}")
 
 
+def _cancel_showdown_timer(table_id: str) -> None:
+    task = _showdown_timers.pop(table_id, None)
+    if task is not None:
+        task.cancel()
+
+
+async def _finalize_showdown_hand(
+    table_id: str,
+    session_id: str,
+    table_service: TableService,
+) -> None:
+    _cancel_showdown_timer(table_id)
+
+    table = await table_service.get_table(table_id)
+    asyncio.create_task(_persist_hand_to_db(table, table_service))
+    await asyncio.sleep(3)
+
+    async with table_service.acquire_lock(table_id):
+        table = await table_service.get_table(table_id)
+        if table.phase != "showdown":
+            return
+        variant2 = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
+        engine2 = GameEngine(table, table.rules, variant2)
+        engine2.end_hand()
+        await table_service.save_table(table)
+
+        end_msg = _build_event_message(
+            table, "hand_ended", session_id,
+            state_patch={
+                "phase": table.phase,
+                "dealer_seat": table.dealer_seat,
+                "players": {
+                    sid: {
+                        "stack": p.stack,
+                        "status": p.status,
+                        "current_bet": p.current_bet,
+                        "can_request_rebuy": (
+                            table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
+                        ),
+                    }
+                    for sid, p in table.players.items()
+                },
+                **_showdown_state_patch(table),
+            },
+        )
+        await table_service.publish_event(table_id, end_msg)
+
+
+async def _schedule_showdown_timer(
+    table_id: str,
+    expected_session_id: str,
+    triggered_by: str,
+    table_service: TableService,
+) -> None:
+    _cancel_showdown_timer(table_id)
+
+    async def _timer_task() -> None:
+        try:
+            await asyncio.sleep(SHOWDOWN_DECISION_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+        should_finalize = False
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+            if table.phase != "showdown":
+                return
+            _normalize_showdown_index(table)
+            current_sid = _current_showdown_session_id(table)
+            if current_sid != expected_session_id:
+                return
+            if current_sid not in table.players:
+                return
+
+            auto_action = "muck" if _can_muck_against_top_shown(table, current_sid) else "show"
+            if auto_action == "show":
+                table.showdown_shown.append(current_sid)
+                table.players[current_sid].is_revealed = [True] * len(table.players[current_sid].hole_cards)
+                top_sid = table.showdown_top_shown_session_id
+                if top_sid is None:
+                    table.showdown_top_shown_session_id = current_sid
+                else:
+                    challenger = _showdown_hand_result(table, current_sid)
+                    top_result = _showdown_hand_result(table, top_sid)
+                    if challenger is not None and top_result is not None and HandEvaluator.compare(challenger, top_result) > 0:
+                        table.showdown_top_shown_session_id = current_sid
+            else:
+                table.showdown_mucked.append(current_sid)
+                table.players[current_sid].is_revealed = [False] * len(table.players[current_sid].hole_cards)
+            _normalize_showdown_index(table)
+            variant = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
+            engine = GameEngine(table, table.rules, variant)
+            engine.refresh_showdown_hand_log()
+            table.action_seq += 1
+
+            await table_service.save_table(table)
+            await table_service.publish_event(
+                table_id,
+                _build_event_message(
+                    table,
+                    "showdown_decision",
+                    current_sid,
+                    decision=auto_action,
+                    auto=True,
+                    state_patch={
+                        "players": _build_public_hand_complete_players(table),
+                        "hand_log": [entry.to_dict() for entry in table.hand_log],
+                        **_showdown_state_patch(table),
+                    },
+                ),
+            )
+            should_finalize = _showdown_complete(table)
+            next_sid = _current_showdown_session_id(table)
+
+        if should_finalize:
+            await _finalize_showdown_hand(table_id, triggered_by, table_service)
+        elif next_sid is not None:
+            await _schedule_showdown_timer(table_id, next_sid, triggered_by, table_service)
+
+    _showdown_timers[table_id] = asyncio.create_task(_timer_task())
+
+
 async def _advance_street_or_showdown(
     table_id: str,
     session_id: str,
@@ -916,7 +1096,24 @@ async def _advance_street_or_showdown(
     active = [p for p in table.players.values() if p.status in ("active", "all_in")]
     if next_street is None or len([p for p in active if p.status == "active"]) <= 1:
         # Showdown (showdown() already increments action_seq)
-        winnings = engine.showdown()
+        winnings = engine.showdown(shown_order=[], mucked_order=[])
+        is_showdown = bool(table.hand_log and table.hand_log[0].showdown)
+        showdown_player_ids = [
+            sid for sid, p in table.players.items() if p.status in ("active", "all_in")
+        ]
+        if is_showdown:
+            table.showdown_order = engine.determine_showdown_order(showdown_player_ids)
+            table.showdown_index = 0
+            table.showdown_shown = []
+            table.showdown_mucked = []
+            table.showdown_top_shown_session_id = None
+            _normalize_showdown_index(table)
+        else:
+            table.showdown_order = []
+            table.showdown_index = 0
+            table.showdown_shown = []
+            table.showdown_mucked = []
+            table.showdown_top_shown_session_id = None
 
         winners_payload = {sid: amt for sid, amt in winnings.items() if amt > 0}
         broadcast_msg = _build_event_message(
@@ -928,44 +1125,16 @@ async def _advance_street_or_showdown(
                 "side_pots": [sp.to_dict() for sp in table.side_pots],
                 "players": _build_public_hand_complete_players(table),
                 "hand_log": [entry.to_dict() for entry in table.hand_log],
+                **_showdown_state_patch(table),
             },
         )
         await table_service.save_table(table)
         await table_service.publish_event(table_id, broadcast_msg)
-
-        # Persist hand to PostgreSQL (fire-and-forget — does not delay gameplay)
-        asyncio.create_task(_persist_hand_to_db(table, table_service))
-
-        # End hand after a short delay to allow clients to display showdown
-        await asyncio.sleep(3)
-
-        async with table_service.acquire_lock(table_id):
-            table = await table_service.get_table(table_id)
-            variant2 = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
-            engine2 = GameEngine(table, table.rules, variant2)
-            engine2.end_hand()
-            # end_hand() already increments action_seq
-            await table_service.save_table(table)
-
-            end_msg = _build_event_message(
-                table, "hand_ended", session_id,
-                state_patch={
-                    "phase": table.phase,
-                    "dealer_seat": table.dealer_seat,
-                    "players": {
-                        sid: {
-                            "stack": p.stack,
-                            "status": p.status,
-                            "current_bet": p.current_bet,
-                            "can_request_rebuy": (
-                                table.rules.allow_rebuy and p.stack <= 0 and p.status == "sitting_out"
-                            ),
-                        }
-                        for sid, p in table.players.items()
-                    },
-                },
-            )
-            await table_service.publish_event(table_id, end_msg)
+        next_sid = _current_showdown_session_id(table) if is_showdown else None
+        if next_sid is None:
+            await _finalize_showdown_hand(table_id, session_id, table_service)
+        else:
+            await _schedule_showdown_timer(table_id, next_sid, session_id, table_service)
     else:
         # Deal next street (deal_street already increments action_seq)
         engine.deal_street(next_street)
@@ -1347,6 +1516,109 @@ async def _handle_pause_request(
         })
 
 
+async def _handle_showdown_decision(
+    table_id: str,
+    session_id: str,
+    msg: dict,
+    table_service: TableService,
+) -> None:
+    decision = str(msg.get("decision", "")).lower()
+    if decision not in ("show", "muck"):
+        await manager.send_personal(table_id, session_id, {
+            "type": "error",
+            "code": "INVALID_SHOWDOWN_DECISION",
+            "message": "decision must be 'show' or 'muck'",
+        })
+        return
+
+    try:
+        async with table_service.acquire_lock(table_id):
+            table = await table_service.get_table(table_id)
+
+            if table.phase != "showdown":
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "INVALID_PHASE",
+                    "message": "Showdown decision is only allowed during showdown",
+                })
+                return
+            if session_id not in table.players:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "NOT_AT_TABLE",
+                    "message": "You are not seated at this table",
+                })
+                return
+
+            _normalize_showdown_index(table)
+            current_sid = _current_showdown_session_id(table)
+            if current_sid != session_id:
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "NOT_YOUR_TURN",
+                    "message": "It is not your showdown turn",
+                })
+                return
+
+            if decision == "muck" and not _can_muck_against_top_shown(table, session_id):
+                await manager.send_personal(table_id, session_id, {
+                    "type": "error",
+                    "code": "CANNOT_MUCK_YET",
+                    "message": "You can only muck if your hand does not beat the best shown hand",
+                })
+                return
+
+            _cancel_showdown_timer(table_id)
+
+            if decision == "show":
+                table.showdown_shown.append(session_id)
+                table.players[session_id].is_revealed = [True] * len(table.players[session_id].hole_cards)
+                top_sid = table.showdown_top_shown_session_id
+                if top_sid is None:
+                    table.showdown_top_shown_session_id = session_id
+                else:
+                    challenger = _showdown_hand_result(table, session_id)
+                    top_result = _showdown_hand_result(table, top_sid)
+                    if challenger is not None and top_result is not None and HandEvaluator.compare(challenger, top_result) > 0:
+                        table.showdown_top_shown_session_id = session_id
+            else:
+                table.showdown_mucked.append(session_id)
+                table.players[session_id].is_revealed = [False] * len(table.players[session_id].hole_cards)
+
+            _normalize_showdown_index(table)
+            variant = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
+            engine = GameEngine(table, table.rules, variant)
+            engine.refresh_showdown_hand_log()
+            table.action_seq += 1
+
+            await table_service.save_table(table)
+            broadcast_msg = _build_event_message(
+                table, "showdown_decision", session_id,
+                decision=decision,
+                auto=False,
+                state_patch={
+                    "players": _build_public_hand_complete_players(table),
+                    "hand_log": [entry.to_dict() for entry in table.hand_log],
+                    **_showdown_state_patch(table),
+                },
+            )
+            await table_service.publish_event(table_id, broadcast_msg)
+            complete = _showdown_complete(table)
+            next_sid = _current_showdown_session_id(table)
+
+        if complete:
+            await _finalize_showdown_hand(table_id, session_id, table_service)
+        elif next_sid is not None:
+            await _schedule_showdown_timer(table_id, next_sid, session_id, table_service)
+
+    except HTTPException:
+        await manager.send_personal(table_id, session_id, {
+            "type": "error",
+            "code": "LOCK_CONFLICT",
+            "message": "Action in progress, please retry",
+        })
+
+
 async def _handle_unpause_request(
     table_id: str,
     session_id: str,
@@ -1591,6 +1863,51 @@ async def _handle_sit_down_request(
                 requester_name = requester.name
             except Exception:
                 requester_name = session_id  # fallback
+
+            # Admin sits down immediately — no approval needed from themselves
+            if session_id == table.admin_id:
+                status = "sitting_out" if table.phase not in ("waiting", "between_hands") else "active"
+                new_player = Player(
+                    session_id=session_id,
+                    name=requester_name,
+                    stack=chips,
+                    hole_cards=[],
+                    seat=seat,
+                    status=status,
+                    is_admin=True,
+                    buy_in=chips,
+                )
+                table.players[session_id] = new_player
+                if session_id not in table.player_join_order:
+                    table.player_join_order.append(session_id)
+                if session_id in table.spectators:
+                    table.spectators.remove(session_id)
+                table.action_seq += 1
+                await table_service.save_table(table)
+
+                asyncio.create_task(table_service.persist_table_if_missing(
+                    table_id, json.dumps(table.rules.to_dict())
+                ))
+                asyncio.create_task(table_service.persist_stack_transaction(
+                    table_id=table_id,
+                    session_id=session_id,
+                    transaction_type="buyin",
+                    amount=chips,
+                ))
+
+                player_dict = new_player.to_dict()
+                player_dict["hole_cards"] = []
+                broadcast_msg = _build_event_message(
+                    table, "sit_down_approved", session_id,
+                    seat=seat,
+                    chips=chips,
+                    players={session_id: player_dict},
+                    player_join_order=table.player_join_order,
+                    spectators=table.spectators,
+                    pending_sit_requests=list(table.pending_sit_requests),
+                )
+                await table_service.publish_event(table_id, broadcast_msg)
+                return
 
             table.pending_sit_requests.append({
                 "session_id": session_id,
@@ -1955,14 +2272,26 @@ async def _handle_sit_in(
                 })
                 return
 
-            player.status = "active"
-            table.action_seq += 1
-            await table_service.save_table(table)
+            hand_in_progress = table.phase not in ("waiting", "between_hands")
+            if hand_in_progress:
+                # Defer: activate player before next hand is dealt
+                player.sit_in_next_hand = True
+                table.action_seq += 1
+                await table_service.save_table(table)
 
-            broadcast_msg = _build_event_message(
-                table, "player_sit_in", session_id,
-                players={session_id: {"status": "active", "can_request_rebuy": False}},
-            )
+                broadcast_msg = _build_event_message(
+                    table, "player_sit_in", session_id,
+                    players={session_id: {"status": "sitting_out", "sit_in_next_hand": True, "can_request_rebuy": False}},
+                )
+            else:
+                player.status = "active"
+                table.action_seq += 1
+                await table_service.save_table(table)
+
+                broadcast_msg = _build_event_message(
+                    table, "player_sit_in", session_id,
+                    players={session_id: {"status": "active", "sit_in_next_hand": False, "can_request_rebuy": False}},
+                )
             await table_service.publish_event(table_id, broadcast_msg)
 
     except HTTPException:

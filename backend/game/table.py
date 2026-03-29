@@ -158,6 +158,7 @@ class Table:
     deck: Deck
     dealer_seat: int
     current_action_seat: int
+    name: str = ""
     phase: Literal["waiting", "preflop", "flop", "turn", "river", "showdown", "between_hands"] = "waiting"
     hand_number: int = 0
     action_seq: int = 0
@@ -173,10 +174,16 @@ class Table:
     last_action_at: datetime | None = None
     leaderboard: list[dict] = field(default_factory=list)  # stood-up players: {session_id, name, buy_in, final_stack}
     pending_rebuys: list[dict] = field(default_factory=list)  # {session_id, amount} — applied at next hand start
+    showdown_order: list[str] = field(default_factory=list)  # session_ids in reveal/muck order
+    showdown_index: int = 0  # pointer into showdown_order for next decision
+    showdown_shown: list[str] = field(default_factory=list)  # session_ids that have shown
+    showdown_mucked: list[str] = field(default_factory=list)  # session_ids that have mucked
+    showdown_top_shown_session_id: str | None = None  # current strongest shown hand
 
     def to_dict(self) -> dict:
         return {
             "table_id": self.table_id,
+            "name": self.name,
             "players": {sid: p.to_dict() for sid, p in self.players.items()},
             "player_join_order": self.player_join_order,
             "admin_id": self.admin_id,
@@ -202,12 +209,18 @@ class Table:
             "last_action_at": self.last_action_at.isoformat() if self.last_action_at else None,
             "leaderboard": self.leaderboard,
             "pending_rebuys": self.pending_rebuys,
+            "showdown_order": self.showdown_order,
+            "showdown_index": self.showdown_index,
+            "showdown_shown": self.showdown_shown,
+            "showdown_mucked": self.showdown_mucked,
+            "showdown_top_shown_session_id": self.showdown_top_shown_session_id,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Table":
         return cls(
             table_id=data["table_id"],
+            name=data.get("name", ""),
             players={sid: Player.from_dict(p) for sid, p in data["players"].items()},
             player_join_order=data["player_join_order"],
             admin_id=data["admin_id"],
@@ -233,4 +246,9 @@ class Table:
             last_action_at=datetime.fromisoformat(data["last_action_at"]) if data.get("last_action_at") else None,
             leaderboard=data.get("leaderboard", []),
             pending_rebuys=data.get("pending_rebuys", []),
+            showdown_order=data.get("showdown_order", []),
+            showdown_index=data.get("showdown_index", 0),
+            showdown_shown=data.get("showdown_shown", []),
+            showdown_mucked=data.get("showdown_mucked", []),
+            showdown_top_shown_session_id=data.get("showdown_top_shown_session_id"),
         )

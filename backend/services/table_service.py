@@ -47,22 +47,23 @@ class TableService:
         rules: TableRules,
         creator_id: str,
         creator: Player,
+        name: str = "",
     ) -> Table:
         """Create a new table, persist to Redis, return the Table object."""
         redis = await self._get_redis()
         table_id = str(uuid.uuid4())
 
-        # Give creator admin role
+        # Give creator admin role (they will sit down separately via buy-in prompt)
         creator.is_admin = True
-        creator.seat = 0
-        creator.stack = rules.big_blind * 100  # default 100 BB buy-in
 
         deck = Deck.build(rules.variant)
         table = Table(
             table_id=table_id,
-            players={creator_id: creator},
-            player_join_order=[creator_id],
+            name=name,
+            players={},
+            player_join_order=[],
             admin_id=creator_id,
+            spectators=[creator_id],
             rules=rules,
             board=Board(),
             pot=0,

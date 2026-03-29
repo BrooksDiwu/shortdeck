@@ -40,6 +40,13 @@ class GameEngine:
                 applied_rebuys.append({"session_id": sid, "amount": amount, "new_stack": p.stack, "buy_in": p.buy_in})
         table.pending_rebuys = []
 
+        # Activate players who clicked sit-in during the previous hand.
+        for p in table.players.values():
+            if p.sit_in_next_hand:
+                p.sit_in_next_hand = False
+                if p.status == "sitting_out" and p.stack > 0:
+                    p.status = "active"
+
         # Safety: busted players must stay sat out until they rebuy.
         for p in table.players.values():
             if p.stack <= 0 and p.status != "disconnected":
@@ -121,7 +128,11 @@ class GameEngine:
         table.action_seq += 1
         table.phase = street.name
 
-    def showdown(self) -> dict[str, int]:
+    def showdown(
+        self,
+        shown_order: list[str] | None = None,
+        mucked_order: list[str] | None = None,
+    ) -> dict[str, int]:
         """
         Evaluate hands, build side pots, award chips.
         Returns {session_id: amount_won}.
@@ -217,6 +228,8 @@ class GameEngine:
             showdown=True,
             primary_results=player_results,
             secondary_results=secondary_results,
+            shown_order=shown_order,
+            mucked_order=mucked_order,
         )
         table.action_seq += 1
         return winnings
@@ -258,12 +271,19 @@ class GameEngine:
         showdown: bool,
         primary_results: dict[str, HandResult],
         secondary_results: dict[str, HandResult],
+        shown_order: list[str] | None = None,
+        mucked_order: list[str] | None = None,
     ) -> None:
         table = self.table
         hand_descriptions = self._build_hand_descriptions(primary_results, secondary_results)
 
         shown_hands: list[HandLogShownHand] = []
         if showdown:
+            shown_session_ids = (
+                shown_order
+                if shown_order is not None
+                else self._sorted_session_ids(primary_results.keys())
+            )
             shown_hands = [
                 HandLogShownHand(
                     session_id=sid,
@@ -273,7 +293,8 @@ class GameEngine:
                     best_hand=hand_descriptions[sid],
                     amount_won=winnings.get(sid, 0),
                 )
-                for sid in self._sorted_session_ids(primary_results.keys())
+                for sid in shown_session_ids
+                if sid in primary_results and sid in table.players
             ]
 
         winners = [
@@ -300,9 +321,95 @@ class GameEngine:
             ),
             winners=winners,
             shown_hands=shown_hands,
-            action_lines=self._build_action_lines(showdown, shown_hands, winners),
+            action_lines=self._build_action_lines(
+                showdown,
+                shown_hands,
+                winners,
+                mucked_order=mucked_order or [],
+            ),
         )
         table.hand_log = [entry] + table.hand_log[: HAND_LOG_MAX_ENTRIES - 1]
+
+    def determine_showdown_order(self, showdown_player_ids: list[str] | set[str]) -> list[str]:
+        """Return showdown order: last aggressor first, else first left of dealer."""
+        table = self.table
+        had_wager_on_street = any(
+            table.players[sid].current_bet > 0
+            for sid in showdown_player_ids
+            if sid in table.players
+        )
+        seats = sorted(
+            (
+                table.players[sid].seat,
+                sid,
+            )
+            for sid in showdown_player_ids
+            if sid in table.players
+        )
+        if not seats:
+            return []
+
+        if len(seats) == 1:
+            return [seats[0][1]]
+
+        aggressor_sid = None
+        if had_wager_on_street and table.last_aggressor_seat is not None:
+            aggressor_sid = next(
+                (sid for seat, sid in seats if seat == table.last_aggressor_seat),
+                None,
+            )
+        if aggressor_sid is not None:
+            start_seat = table.last_aggressor_seat
+        else:
+            after_dealer = [seat for seat, _ in seats if seat > table.dealer_seat]
+            start_seat = after_dealer[0] if after_dealer else seats[0][0]
+
+        rotated = [sid for seat, sid in seats if seat >= start_seat]
+        rotated.extend([sid for seat, sid in seats if seat < start_seat])
+        return rotated
+
+    def refresh_showdown_hand_log(self) -> None:
+        """Rebuild latest showdown hand-log lines/hands from current table showdown state."""
+        table = self.table
+        if not table.hand_log or not table.hand_log[0].showdown:
+            return
+
+        entry = table.hand_log[0]
+        showdown_players = {
+            sid: p for sid, p in table.players.items() if p.status in ("active", "all_in")
+        }
+        primary_results: dict[str, HandResult] = {}
+        secondary_results: dict[str, HandResult] = {}
+        for sid, player in showdown_players.items():
+            primary_results[sid] = HandEvaluator.evaluate(player.hole_cards, table.board.primary, self.rules)
+            if self.rules.extra_board and table.board.secondary:
+                secondary_results[sid] = HandEvaluator.evaluate(player.hole_cards, table.board.secondary, self.rules)
+
+        hand_descriptions = self._build_hand_descriptions(primary_results, secondary_results)
+
+        shown_hands: list[HandLogShownHand] = []
+        for sid in table.showdown_shown:
+            if sid not in table.players:
+                continue
+            player = table.players[sid]
+            shown_hands.append(
+                HandLogShownHand(
+                    session_id=sid,
+                    name=player.name,
+                    seat=player.seat,
+                    hole_cards=list(player.hole_cards),
+                    best_hand=hand_descriptions.get(sid, ""),
+                    amount_won=next((w.amount_won for w in entry.winners if w.session_id == sid), 0),
+                )
+            )
+
+        entry.shown_hands = shown_hands
+        entry.action_lines = self._build_action_lines(
+            showdown=True,
+            shown_hands=shown_hands,
+            winners=entry.winners,
+            mucked_order=table.showdown_mucked,
+        )
 
     def _build_hand_descriptions(
         self,
@@ -365,16 +472,25 @@ class GameEngine:
         showdown: bool,
         shown_hands: list[HandLogShownHand],
         winners: list[HandLogWinner],
+        mucked_order: list[str] | None = None,
     ) -> list[str]:
         table = self.table
         lines = list(table.current_hand_actions)
 
         if showdown:
             lines.append("*** SHOWDOWN ***")
-            for shown in shown_hands:
-                lines.append(
-                    f"{shown.name}: shows [{self._format_cards(shown.hole_cards)}] ({shown.best_hand})"
-                )
+            shown_by_sid = {shown.session_id: shown for shown in shown_hands}
+            shown_set = set(shown_by_sid.keys())
+            mucked_set = set(mucked_order or [])
+            order = table.showdown_order if table.showdown_order else list(shown_set | mucked_set)
+            for sid in order:
+                if sid in shown_set:
+                    shown = shown_by_sid[sid]
+                    lines.append(
+                        f"{shown.name}: shows [{self._format_cards(shown.hole_cards)}] ({shown.best_hand})"
+                    )
+                elif sid in mucked_set and sid in table.players:
+                    lines.append(f"{table.players[sid].name}: mucks")
         else:
             lines.append("*** HAND ENDS BEFORE SHOWDOWN ***")
 
@@ -414,6 +530,11 @@ class GameEngine:
         table.side_pots = []
         table.board.primary = []
         table.board.secondary = []
+        table.showdown_order = []
+        table.showdown_index = 0
+        table.showdown_shown = []
+        table.showdown_mucked = []
+        table.showdown_top_shown_session_id = None
         table.action_seq += 1
         table.phase = "between_hands"
 

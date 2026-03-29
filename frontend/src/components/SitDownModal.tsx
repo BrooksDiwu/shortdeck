@@ -7,9 +7,10 @@ interface SitDownModalProps {
   onConfirm: (seat: number, chips: number) => void
   onClose: () => void
   isRebuy?: boolean
+  isAdmin?: boolean
 }
 
-export default function SitDownModal({ open, seat, onConfirm, onClose, isRebuy }: SitDownModalProps) {
+export default function SitDownModal({ open, seat, onConfirm, onClose, isRebuy, isAdmin }: SitDownModalProps) {
   const [chips, setChips] = useState(1000)
 
   const handleConfirm = () => {
@@ -68,12 +69,14 @@ export default function SitDownModal({ open, seat, onConfirm, onClose, isRebuy }
             className="flex-1 py-2.5 bg-green-600 hover:bg-green-500 rounded-xl text-white font-semibold text-sm transition-colors"
             onClick={handleConfirm}
           >
-            {isRebuy ? 'Request Rebuy' : 'Request Seat'}
+            {isRebuy ? 'Request Rebuy' : isAdmin ? 'Take Seat' : 'Request Seat'}
           </button>
         </div>
 
         <p className="text-zinc-600 text-xs text-center">
-          Your request will be sent to the host for approval.
+          {isAdmin
+            ? "You'll be seated immediately."
+            : 'Your request will be sent to the host for approval.'}
         </p>
       </div>
     </Modal>

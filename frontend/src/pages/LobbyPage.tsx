@@ -104,7 +104,7 @@ export default function LobbyPage() {
     setCreateLoading(true)
     setCreateError('')
     try {
-      const table = await api.createTable(currentToken, rules)
+      const table = await api.createTable(currentToken, rules, tableName)
       await api.joinTable(currentToken, table.table_id)
       navigate(`/table/${table.table_id}`)
     } catch (e) {
@@ -184,7 +184,7 @@ export default function LobbyPage() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <h3 className="text-white font-semibold text-sm truncate">
-                        {truncateId(table.table_id)}
+                        {table.name || truncateId(table.table_id)}
                       </h3>
                       <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <span className="text-green-400 text-xs font-semibold bg-green-400/10 px-2 py-0.5 rounded-full">

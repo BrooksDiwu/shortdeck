@@ -18,6 +18,7 @@ class Player:
     disconnect_at: datetime | None = None
     is_revealed: list[bool] = field(default_factory=lambda: [False, False])
     buy_in: int = 0  # total chips bought in across all buyins/rebuys at this seat
+    sit_in_next_hand: bool = False  # player clicked sit-in during a hand; activate before next deal
 
     def to_dict(self) -> dict:
         return {
@@ -34,6 +35,7 @@ class Player:
             "disconnect_at": self.disconnect_at.isoformat() if self.disconnect_at else None,
             "is_revealed": self.is_revealed,
             "buy_in": self.buy_in,
+            "sit_in_next_hand": self.sit_in_next_hand,
         }
 
     @classmethod
@@ -53,4 +55,5 @@ class Player:
             disconnect_at=datetime.fromisoformat(data["disconnect_at"]) if data.get("disconnect_at") else None,
             is_revealed=data.get("is_revealed", [False, False]),
             buy_in=data.get("buy_in", 0),
+            sit_in_next_hand=data.get("sit_in_next_hand", False),
         )
