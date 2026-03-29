@@ -700,43 +700,6 @@ async def _handle_start_hand(
 
             await table_service.save_table(table)
 
-            # Broadcast rebuy_applied events for any rebuys that fired at hand start
-            for rebuy in applied_rebuys:
-                rebuy_sid = rebuy["session_id"]
-                rebuy_event = {
-                    "type": "event",
-                    "seq": table.action_seq,
-                    "hand": table.hand_number,
-                    "event_type": "rebuy_applied",
-                    "session_id": rebuy_sid,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "state_patch": {
-                        "players": {
-                            rebuy_sid: {
-                                "stack": rebuy["new_stack"],
-                                "buy_in": rebuy["buy_in"],
-                                "can_request_rebuy": False,
-                            }
-                        }
-                    },
-                }
-                await table_service.publish_event(table_id, rebuy_event)
-
-            # Broadcast new state snapshot (masks hole cards per player)
-            for sid in list(table.players.keys()) + list(table.spectators):
-                snap = _build_state_snapshot(table, sid)
-                await manager.send_personal(table_id, sid, snap)
-
-            # Send each player their private hole cards
-            for sid, player in table.players.items():
-                if player.hole_cards:
-                    await manager.send_personal(table_id, sid, {
-                        "type": "deal",
-                        "seq": table.action_seq,
-                        "hand": table.hand_number,
-                        "hole_cards": [c.to_dict() for c in player.hole_cards],
-                    })
-
             event_log = {
                 "seq": table.action_seq,
                 "hand": table.hand_number,
@@ -745,6 +708,43 @@ async def _handle_start_hand(
                 "timestamp": datetime.utcnow().isoformat(),
             }
             await table_service.append_event(table_id, event_log)
+
+        # Broadcast rebuy_applied events for any rebuys that fired at hand start
+        for rebuy in applied_rebuys:
+            rebuy_sid = rebuy["session_id"]
+            rebuy_event = {
+                "type": "event",
+                "seq": table.action_seq,
+                "hand": table.hand_number,
+                "event_type": "rebuy_applied",
+                "session_id": rebuy_sid,
+                "timestamp": datetime.utcnow().isoformat(),
+                "state_patch": {
+                    "players": {
+                        rebuy_sid: {
+                            "stack": rebuy["new_stack"],
+                            "buy_in": rebuy["buy_in"],
+                            "can_request_rebuy": False,
+                        }
+                    }
+                },
+            }
+            await table_service.publish_event(table_id, rebuy_event)
+
+        # Broadcast new state snapshot (masks hole cards per player)
+        for sid in list(table.players.keys()) + list(table.spectators):
+            snap = _build_state_snapshot(table, sid)
+            await manager.send_personal(table_id, sid, snap)
+
+        # Send each player their private hole cards
+        for sid, player in table.players.items():
+            if player.hole_cards:
+                await manager.send_personal(table_id, sid, {
+                    "type": "deal",
+                    "seq": table.action_seq,
+                    "hand": table.hand_number,
+                    "hole_cards": [c.to_dict() for c in player.hole_cards],
+                })
 
         if round_complete:
             await _advance_street_or_showdown(table_id, session_id, table, table_service)
