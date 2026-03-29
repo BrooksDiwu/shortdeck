@@ -1614,17 +1614,19 @@ async def _handle_sit_down_request(
                 chips=chips,
             )
             await table_service.publish_event(table_id, broadcast_msg)
+            admin_id = table.admin_id
+            updated_pending = list(table.pending_sit_requests)
 
-            # Send admin a personal message with the full pending list
-            await manager.send_personal(table_id, table.admin_id, {
-                "type": "sit_down_request",
-                "session_id": session_id,
-                "seat": seat,
-                "chips": chips,
-                "name": requester_name,
-                "pending_sit_requests": table.pending_sit_requests,
-            })
-            print(f"[SIT_DOWN_REQUEST] personal message sent to admin {table.admin_id}")
+        # Send admin a personal message outside lock to avoid concurrent WS writes with pub/sub
+        await manager.send_personal(table_id, admin_id, {
+            "type": "sit_down_request",
+            "session_id": session_id,
+            "seat": seat,
+            "chips": chips,
+            "name": requester_name,
+            "pending_sit_requests": updated_pending,
+        })
+        print(f"[SIT_DOWN_REQUEST] personal message sent to admin {admin_id}")
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {
@@ -1721,15 +1723,17 @@ async def _handle_approve_sit_down(
                 pending_sit_requests=[],
             )
             await table_service.publish_event(table_id, broadcast_msg)
+            admin_id = table.admin_id
+            updated_pending = list(table.pending_sit_requests)
 
-            # Send admin a personal message with updated pending_sit_requests
-            await manager.send_personal(table_id, table.admin_id, {
-                "type": "sit_down_approved",
-                "session_id": target_id,
-                "seat": seat,
-                "chips": chips,
-                "pending_sit_requests": table.pending_sit_requests,
-            })
+        # Send admin a personal message with updated pending_sit_requests (outside lock to avoid concurrent WS writes)
+        await manager.send_personal(table_id, admin_id, {
+            "type": "sit_down_approved",
+            "session_id": target_id,
+            "seat": seat,
+            "chips": chips,
+            "pending_sit_requests": updated_pending,
+        })
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {
@@ -1769,25 +1773,25 @@ async def _handle_reject_sit_down(
 
             await table_service.save_table(table)
 
-            # Send personal rejection to the target
-            await manager.send_personal(table_id, target_id, {
-                "type": "sit_down_rejected",
-                "session_id": target_id,
-            })
-
             # Broadcast to all
             broadcast_msg = _build_event_message(
                 table, "sit_down_rejected", session_id,
                 rejected_session_id=target_id,
             )
             await table_service.publish_event(table_id, broadcast_msg)
+            admin_id = table.admin_id
+            updated_pending = list(table.pending_sit_requests)
 
-            # Send admin a personal message with updated pending_sit_requests
-            await manager.send_personal(table_id, table.admin_id, {
-                "type": "sit_down_rejected",
-                "session_id": target_id,
-                "pending_sit_requests": table.pending_sit_requests,
-            })
+        # Send personal messages outside lock to avoid concurrent WS writes with pub/sub
+        await manager.send_personal(table_id, target_id, {
+            "type": "sit_down_rejected",
+            "session_id": target_id,
+        })
+        await manager.send_personal(table_id, admin_id, {
+            "type": "sit_down_rejected",
+            "session_id": target_id,
+            "pending_sit_requests": updated_pending,
+        })
 
     except HTTPException:
         await manager.send_personal(table_id, session_id, {
