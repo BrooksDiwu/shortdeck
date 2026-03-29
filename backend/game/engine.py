@@ -87,6 +87,7 @@ class GameEngine:
         table.hand_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         table.current_hand_actions.append(f"Hand #{table.hand_number} started")
         self._append_blind_lines()
+        return applied_rebuys
 
     def run_betting_round(self) -> None:
         """Placeholder — actual betting driven by WebSocket actions."""
