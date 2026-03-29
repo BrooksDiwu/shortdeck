@@ -42,7 +42,7 @@ async def _abandonment_cleanup_task() -> None:
                         abandoned_at_str = meta.get("abandoned_at")
                         if abandoned_at_str:
                             abandoned_at = datetime.fromisoformat(abandoned_at_str)
-                            if now - abandoned_at > timedelta(hours=24):
+                            if now - abandoned_at > timedelta(minutes=15):
                                 await redis_client.delete(f"table:{table_id}:state")
                                 await redis_client.delete(f"table:{table_id}:log")
                                 await redis_client.delete(f"table:{table_id}:lock")
@@ -63,27 +63,19 @@ async def _abandonment_cleanup_task() -> None:
 
                     connected_players = [
                         p for p in table.players.values()
-                        if p.status != "disconnected"
+                        if p.status not in ("disconnected", "sitting_out")
                     ]
 
                     if connected_players:
                         continue
 
-                    # All disconnected — check how long
-                    disconnect_times = [
-                        p.disconnect_at for p in table.players.values()
-                        if p.disconnect_at is not None
-                    ]
-
-                    if not disconnect_times:
-                        continue
-
-                    earliest_disconnect = min(disconnect_times)
-                    if now - earliest_disconnect > timedelta(minutes=10):
+                    # No active players — check inactivity duration
+                    last_action = table.last_action_at
+                    if last_action and now - last_action > timedelta(minutes=5):
                         meta["status"] = "abandoned"
                         meta["abandoned_at"] = now.isoformat()
                         await redis_client.hset("tables:index", table_id, json.dumps(meta))
-                        logger.info(f"Table {table_id} marked as abandoned")
+                        logger.info(f"Table {table_id} marked as abandoned (inactive for 5+ minutes)")
 
                 except Exception as exc:
                     logger.warning(f"Abandonment check error for table {table_id}: {exc}")

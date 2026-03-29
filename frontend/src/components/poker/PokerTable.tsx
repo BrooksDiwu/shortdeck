@@ -149,12 +149,13 @@ interface PokerTableProps {
   holeCards: Card[];
   onMenuOpen: () => void;
   onHandLogOpen: () => void;
+  onLeaderboardOpen: () => void;
   onSitDown: (seat: number) => void;
   onStartHand: () => void;
   pendingSitOut: boolean;
 }
 
-const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen, onSitDown, onStartHand, pendingSitOut }: PokerTableProps) => {
+const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen, onLeaderboardOpen, onSitDown, onStartHand, pendingSitOut }: PokerTableProps) => {
   const sendMessage = useGameStore((s) => s.sendMessage);
   const rabbitHuntCards = useGameStore((s) => s.rabbitHuntCards);
   const [confirmRevealIndex, setConfirmRevealIndex] = useState<number | null>(null);
@@ -206,7 +207,7 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen
 
   return (
     <div className="w-full max-w-[430px] mx-auto h-[100dvh] flex flex-col bg-felt-dark overflow-hidden">
-      <Toolbar table={table} onMenuOpen={onMenuOpen} onHandLogOpen={onHandLogOpen} />
+      <Toolbar table={table} onMenuOpen={onMenuOpen} onHandLogOpen={onHandLogOpen} onLeaderboardOpen={onLeaderboardOpen} />
 
       {/* Table area */}
       <div className="flex-1 relative min-h-0">

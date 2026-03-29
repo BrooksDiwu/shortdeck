@@ -33,6 +33,14 @@ export interface Player {
   total_in: number
   is_revealed: boolean[]
   can_request_rebuy?: boolean
+  buy_in: number
+}
+
+export interface LeaderboardEntry {
+  session_id: string
+  name: string
+  buy_in: number
+  final_stack: number
 }
 
 export interface SidePot {
@@ -102,6 +110,8 @@ export interface Table {
   is_paused: boolean
   pause_requested_by: string | null
   hand_log: HandLogEntry[]
+  leaderboard: LeaderboardEntry[]
+  pending_rebuys: { session_id: string; amount: number }[]
 }
 
 export interface TableResponse {

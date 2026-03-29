@@ -12,6 +12,7 @@ import SitDownModal from '@/components/SitDownModal'
 import HostApprovalBanner from '@/components/HostApprovalBanner'
 import ConnectionStatus from '@/components/ConnectionStatus'
 import HandLogModal from '@/components/poker/HandLogModal'
+import LeaderboardModal from '@/components/poker/LeaderboardModal'
 
 export default function TablePage() {
   const { id: tableId } = useParams<{ id: string }>()
@@ -37,9 +38,11 @@ export default function TablePage() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [sitSeat, setSitSeat] = useState<number | null>(null)
   const [sitDownOpen, setSitDownOpen] = useState(false)
+  const [isBustRebuy, setIsBustRebuy] = useState(false)
   const [contextMenuSeat, setContextMenuSeat] = useState<{ seat: number; x: number; y: number } | null>(null)
   const [pendingSitOut, setPendingSitOut] = useState(false)
   const [handLogOpen, setHandLogOpen] = useState(false)
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false)
 
   // Auto-dismiss server error toast
   useEffect(() => {
@@ -59,12 +62,29 @@ export default function TablePage() {
   }, [table?.phase, pendingSitOut, sendMessage])
 
   // Clear pending sit-out if player is already sitting out (e.g. reconnect)
-  const localPlayerStatus = table && localPlayerId
-    ? Object.values(table.players).find((p) => p.session_id === localPlayerId)?.status
-    : undefined
+  const localPlayer = table && localPlayerId
+    ? Object.values(table.players).find((p) => p.session_id === localPlayerId) ?? null
+    : null
+  const localPlayerStatus = localPlayer?.status
   useEffect(() => {
     if (localPlayerStatus === 'sitting_out') setPendingSitOut(false)
   }, [localPlayerStatus])
+
+  // Auto-open rebuy modal when local player busts
+  const localPlayerStack = localPlayer?.stack ?? null
+  const localPlayerSeat = localPlayer?.seat ?? null
+  useEffect(() => {
+    if (
+      localPlayerStatus === 'sitting_out' &&
+      localPlayerStack !== null &&
+      localPlayerStack <= 0 &&
+      localPlayerSeat !== null
+    ) {
+      setSitSeat(localPlayerSeat)
+      setIsBustRebuy(true)
+      setSitDownOpen(true)
+    }
+  }, [localPlayerStatus, localPlayerStack, localPlayerSeat])
 
   // Auto-connect on mount if session exists
   useEffect(() => {
@@ -98,10 +118,6 @@ export default function TablePage() {
       navigate('/', { state: { error: connectionError } })
     }
   }, [connectionError, navigate, clearSession])
-
-  const localPlayer = table && localPlayerId
-    ? Object.values(table.players).find((p) => p.session_id === localPlayerId) ?? null
-    : null
 
   const isAdmin = localPlayer?.is_admin ?? false
   const isSeated = localPlayer !== null
@@ -213,6 +229,7 @@ export default function TablePage() {
           holeCards={holeCards}
           onMenuOpen={() => setMenuOpen(true)}
           onHandLogOpen={() => setHandLogOpen(true)}
+          onLeaderboardOpen={() => setLeaderboardOpen(true)}
           onSitDown={handleSitDown}
           onStartHand={() => sendMessage({ type: 'start_hand' })}
           pendingSitOut={pendingSitOut}
@@ -241,7 +258,8 @@ export default function TablePage() {
         open={sitDownOpen}
         seat={sitSeat}
         onConfirm={handleSitDownConfirm}
-        onClose={() => setSitDownOpen(false)}
+        onClose={() => { setSitDownOpen(false); setIsBustRebuy(false) }}
+        isRebuy={isBustRebuy}
       />
 
       {table && (
@@ -250,6 +268,14 @@ export default function TablePage() {
           onClose={() => setHandLogOpen(false)}
           entries={table.hand_log}
           denomination={table.rules.denomination}
+        />
+      )}
+
+      {table && (
+        <LeaderboardModal
+          open={leaderboardOpen}
+          onClose={() => setLeaderboardOpen(false)}
+          table={table}
         />
       )}
 

@@ -169,6 +169,10 @@ class Table:
     last_aggressor_seat: int | None = None  # seat of last bet/raise, or opener on check-around streets
     hand_log: list[HandLogEntry] = field(default_factory=list)
     current_hand_actions: list[str] = field(default_factory=list)
+    hand_started_at: datetime | None = None
+    last_action_at: datetime | None = None
+    leaderboard: list[dict] = field(default_factory=list)  # stood-up players: {session_id, name, buy_in, final_stack}
+    pending_rebuys: list[dict] = field(default_factory=list)  # {session_id, amount} — applied at next hand start
 
     def to_dict(self) -> dict:
         return {
@@ -194,6 +198,10 @@ class Table:
             "last_aggressor_seat": self.last_aggressor_seat,
             "hand_log": [entry.to_dict() for entry in self.hand_log],
             "current_hand_actions": self.current_hand_actions,
+            "hand_started_at": self.hand_started_at.isoformat() if self.hand_started_at else None,
+            "last_action_at": self.last_action_at.isoformat() if self.last_action_at else None,
+            "leaderboard": self.leaderboard,
+            "pending_rebuys": self.pending_rebuys,
         }
 
     @classmethod
@@ -221,4 +229,8 @@ class Table:
             last_aggressor_seat=data.get("last_aggressor_seat", None),
             hand_log=[HandLogEntry.from_dict(entry) for entry in data.get("hand_log", [])],
             current_hand_actions=data.get("current_hand_actions", []),
+            hand_started_at=datetime.fromisoformat(data["hand_started_at"]) if data.get("hand_started_at") else None,
+            last_action_at=datetime.fromisoformat(data["last_action_at"]) if data.get("last_action_at") else None,
+            leaderboard=data.get("leaderboard", []),
+            pending_rebuys=data.get("pending_rebuys", []),
         )

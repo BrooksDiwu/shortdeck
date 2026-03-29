@@ -61,6 +61,18 @@ class HandResultModel(Base):
     amount_won: Mapped[int] = mapped_column(Integer, default=0)
 
     hand: Mapped["HandModel"] = relationship("HandModel", back_populates="results")
+
+
+class StackTransactionModel(Base):
+    __tablename__ = "stack_transactions"
+
+    transaction_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    table_id: Mapped[str] = mapped_column(String(64), ForeignKey("tables.table_id"), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # "buyin" | "rebuy" | "buyout"
+    transaction_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 # ---------------------------------------------------------------------------
 # Async engine and session factory
 # ---------------------------------------------------------------------------

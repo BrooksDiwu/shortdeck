@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -53,7 +54,17 @@ async def create_table(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"max_players ({rules.max_players}) exceeds card-budget cap of {cap}",
         )
+    import json as _json
     table = await table_service.create_table(rules, creator_id=player.session_id, creator=player)
+    asyncio.create_task(table_service.persist_table_if_missing(
+        table.table_id, _json.dumps(rules.to_dict())
+    ))
+    asyncio.create_task(table_service.persist_stack_transaction(
+        table_id=table.table_id,
+        session_id=player.session_id,
+        transaction_type="buyin",
+        amount=table.players[player.session_id].stack,
+    ))
     return TableResponse(
         table_id=table.table_id,
         rules=body.rules,
@@ -146,18 +157,25 @@ async def rebuy(
                 )
 
             if table.phase not in ("waiting", "between_hands"):
-                # Queue the rebuy — will be applied between hands
-                event = {
-                    "type": "rebuy_pending",
+                # Queue the rebuy on the table — applied at next hand start
+                table.pending_rebuys.append({
                     "session_id": player.session_id,
                     "amount": body.amount,
-                }
-                await table_service.append_event(table_id, event)
+                })
+                table.action_seq += 1
+                await table_service.save_table(table)
+                asyncio.create_task(table_service.persist_stack_transaction(
+                    table_id=table_id,
+                    session_id=player.session_id,
+                    transaction_type="rebuy",
+                    amount=body.amount,
+                ))
                 return {"message": "Rebuy queued — will be applied before next hand"}
 
             # Apply immediately if between hands
             seated_player = table.players[player.session_id]
             seated_player.stack += body.amount
+            seated_player.buy_in += body.amount
             table.action_seq += 1
             await table_service.save_table(table)
             event = {
@@ -171,6 +189,7 @@ async def rebuy(
                     "players": {
                         player.session_id: {
                             "stack": seated_player.stack,
+                            "buy_in": seated_player.buy_in,
                             "can_request_rebuy": False,
                         }
                     }
@@ -178,6 +197,12 @@ async def rebuy(
             }
             await table_service.append_event(table_id, event)
             await table_service.publish_event(table_id, event)
+            asyncio.create_task(table_service.persist_stack_transaction(
+                table_id=table_id,
+                session_id=player.session_id,
+                transaction_type="rebuy",
+                amount=body.amount,
+            ))
 
     except HTTPException:
         raise

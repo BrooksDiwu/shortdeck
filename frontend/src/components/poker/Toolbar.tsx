@@ -1,4 +1,4 @@
-import { Settings, Volume2, VolumeX, Menu, History } from "lucide-react";
+import { Settings, Volume2, VolumeX, Menu, History, BarChart2 } from "lucide-react";
 import { useSoundStore } from "@/stores/soundStore";
 import { getGameModeLabel, formatBlinds } from "@/utils/gameUtils";
 import type { Table } from "@/types";
@@ -7,9 +7,10 @@ interface ToolbarProps {
   table: Table | null;
   onMenuOpen: () => void;
   onHandLogOpen: () => void;
+  onLeaderboardOpen: () => void;
 }
 
-const Toolbar = ({ table, onMenuOpen, onHandLogOpen }: ToolbarProps) => {
+const Toolbar = ({ table, onMenuOpen, onHandLogOpen, onLeaderboardOpen }: ToolbarProps) => {
   const { muted, toggleMute } = useSoundStore();
 
   return (
@@ -24,6 +25,9 @@ const Toolbar = ({ table, onMenuOpen, onHandLogOpen }: ToolbarProps) => {
         {table ? `${getGameModeLabel(table.rules)} · ${formatBlinds(table.rules)}` : "Loading..."}
       </div>
       <div className="flex items-center gap-3">
+        <button onClick={onLeaderboardOpen} aria-label="Open leaderboard">
+          <BarChart2 className="w-4 h-4 text-muted-foreground" />
+        </button>
         <button onClick={onHandLogOpen} aria-label="Open hand log" className="relative">
           <History className="w-4 h-4 text-muted-foreground" />
           {table && table.hand_log.length > 0 && (

@@ -16,9 +16,29 @@ class GameEngine:
         self.rules = rules
         self.variant = variant
 
-    def start_hand(self) -> None:
-        """Shuffle fresh deck, deal hole cards, post blinds, increment hand_number."""
+    def start_hand(self) -> list[dict]:
+        """Shuffle fresh deck, deal hole cards, post blinds, increment hand_number.
+
+        Returns list of applied rebuy dicts {session_id, amount} so the caller
+        can broadcast rebuy_applied events before the hand snapshot.
+        """
         table = self.table
+
+        # Apply any pending rebuys before the busted-player check so those
+        # players receive chips and are dealt into this hand.
+        applied_rebuys: list[dict] = []
+        for rebuy in table.pending_rebuys:
+            sid = rebuy["session_id"]
+            amount = rebuy["amount"]
+            if sid in table.players:
+                p = table.players[sid]
+                p.stack += amount
+                p.buy_in += amount
+                # Un-sit them so they get dealt in (will be set to "active" below)
+                if p.status == "sitting_out" and p.stack > 0:
+                    p.status = "active"
+                applied_rebuys.append({"session_id": sid, "amount": amount, "new_stack": p.stack, "buy_in": p.buy_in})
+        table.pending_rebuys = []
 
         # Safety: busted players must stay sat out until they rebuy.
         for p in table.players.values():
@@ -64,6 +84,7 @@ class GameEngine:
         table.hand_number += 1
         table.action_seq += 1
         table.phase = "preflop"
+        table.hand_started_at = datetime.now(timezone.utc).replace(tzinfo=None)
         table.current_hand_actions.append(f"Hand #{table.hand_number} started")
         self._append_blind_lines()
 

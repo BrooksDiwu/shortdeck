@@ -101,6 +101,7 @@ class TableService:
 
     async def save_table(self, table: Table) -> None:
         """Write table snapshot to Redis with TTL reset."""
+        table.last_action_at = datetime.utcnow()
         redis = await self._get_redis()
         key = f"table:{table.table_id}:state"
         await redis.setex(key, TABLE_STATE_TTL, json.dumps(table.to_dict()))
@@ -133,6 +134,21 @@ class TableService:
         log_key = f"table:{table_id}:log"
         await redis.rpush(log_key, json.dumps(event))
         await redis.ltrim(log_key, -LOG_MAX_LENGTH, -1)
+
+    async def get_actions_for_hand(self, table_id: str, hand_number: int) -> list[dict]:
+        """Read the Redis event log and return all betting actions for the given hand number."""
+        redis = await self._get_redis()
+        log_key = f"table:{table_id}:log"
+        raw_events = await redis.lrange(log_key, 0, -1)
+        actions = []
+        for raw in raw_events:
+            try:
+                event = json.loads(raw)
+            except Exception:
+                continue
+            if event.get("hand") == hand_number and event.get("type") == "action":
+                actions.append(event)
+        return actions
 
     async def publish_event(self, table_id: str, event: dict) -> None:
         """Publish event to Redis pub/sub channel."""
@@ -235,3 +251,43 @@ class TableService:
                         amount_won=result_data.get("amount_won", 0),
                     )
                     db.add(result_record)
+
+    async def persist_table_if_missing(self, table_id: str, rules_json: str) -> None:
+        """Upsert a TableModel row so FK constraints on stack_transactions are satisfied."""
+        from ..models.db import AsyncSessionLocal, TableModel
+        from sqlalchemy import select
+
+        async with AsyncSessionLocal() as db:
+            async with db.begin():
+                result = await db.execute(
+                    select(TableModel).where(TableModel.table_id == table_id)
+                )
+                if result.scalar_one_or_none() is None:
+                    db.add(TableModel(
+                        table_id=table_id,
+                        rules_json=rules_json,
+                        status="active",
+                    ))
+
+    async def persist_stack_transaction(
+        self,
+        table_id: str,
+        session_id: str,
+        transaction_type: str,
+        amount: int,
+    ) -> None:
+        """Record a buy-in, rebuy, or buyout to PostgreSQL."""
+        from ..models.db import AsyncSessionLocal, StackTransactionModel
+        import json as _json
+
+        async with AsyncSessionLocal() as db:
+            async with db.begin():
+                tx = StackTransactionModel(
+                    transaction_id=str(uuid.uuid4()),
+                    table_id=table_id,
+                    session_id=session_id,
+                    transaction_type=transaction_type,
+                    amount=amount,
+                    timestamp=datetime.utcnow(),
+                )
+                db.add(tx)

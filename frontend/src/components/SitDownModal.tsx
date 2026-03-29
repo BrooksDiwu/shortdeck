@@ -6,9 +6,10 @@ interface SitDownModalProps {
   seat: number | null
   onConfirm: (seat: number, chips: number) => void
   onClose: () => void
+  isRebuy?: boolean
 }
 
-export default function SitDownModal({ open, seat, onConfirm, onClose }: SitDownModalProps) {
+export default function SitDownModal({ open, seat, onConfirm, onClose, isRebuy }: SitDownModalProps) {
   const [chips, setChips] = useState(1000)
 
   const handleConfirm = () => {
@@ -17,11 +18,15 @@ export default function SitDownModal({ open, seat, onConfirm, onClose }: SitDown
     onClose()
   }
 
+  const title = isRebuy ? 'Buy Back In' : `Take Seat ${seat}`
+
   return (
-    <Modal open={open} onClose={onClose} title={`Take Seat ${seat}`}>
+    <Modal open={open} onClose={onClose} title={title}>
       <div className="flex flex-col gap-4">
         <p className="text-zinc-400 text-sm">
-          How many chips would you like to bring to the table?
+          {isRebuy
+            ? "You're out of chips. How many chips would you like to buy back in with?"
+            : 'How many chips would you like to bring to the table?'}
         </p>
 
         <div className="flex flex-col gap-1">
@@ -63,7 +68,7 @@ export default function SitDownModal({ open, seat, onConfirm, onClose }: SitDown
             className="flex-1 py-2.5 bg-green-600 hover:bg-green-500 rounded-xl text-white font-semibold text-sm transition-colors"
             onClick={handleConfirm}
           >
-            Request Seat
+            {isRebuy ? 'Request Rebuy' : 'Request Seat'}
           </button>
         </div>
 

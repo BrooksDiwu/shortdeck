@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Grace period in seconds before auto-action on disconnect
-DISCONNECT_GRACE_SECONDS = 30
+DISCONNECT_GRACE_SECONDS = 180
 ALL_IN_RUNOUT_STREET_DELAY_SECONDS = 2
 
 test = ""
@@ -200,6 +200,8 @@ def _build_state_snapshot(table, session_id: str) -> dict:
         "player_join_order": table.player_join_order,
         "table_id": table.table_id,
         "hand_log": [entry.to_dict() for entry in table.hand_log],
+        "leaderboard": table.leaderboard,
+        "pending_rebuys": table.pending_rebuys,
     }
 
 
@@ -693,10 +695,32 @@ async def _handle_start_hand(
 
             variant = ShortdeckVariant() if table.rules.variant == "shortdeck" else HoldemVariant()
             engine = GameEngine(table, table.rules, variant)
-            engine.start_hand()
+            applied_rebuys = engine.start_hand()
             round_complete = _is_betting_round_complete(table)
 
             await table_service.save_table(table)
+
+            # Broadcast rebuy_applied events for any rebuys that fired at hand start
+            for rebuy in applied_rebuys:
+                rebuy_sid = rebuy["session_id"]
+                rebuy_event = {
+                    "type": "event",
+                    "seq": table.action_seq,
+                    "hand": table.hand_number,
+                    "event_type": "rebuy_applied",
+                    "session_id": rebuy_sid,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "state_patch": {
+                        "players": {
+                            rebuy_sid: {
+                                "stack": rebuy["new_stack"],
+                                "buy_in": rebuy["buy_in"],
+                                "can_request_rebuy": False,
+                            }
+                        }
+                    },
+                }
+                await table_service.publish_event(table_id, rebuy_event)
 
             # Broadcast new state snapshot (masks hole cards per player)
             for sid in list(table.players.keys()) + list(table.spectators):
@@ -799,6 +823,48 @@ def _advance_action(table) -> None:
     table.current_action_seat = nxt.seat
 
 
+async def _persist_hand_to_db(table, table_service: TableService) -> None:
+    """Fire-and-forget: write completed hand data to PostgreSQL."""
+    try:
+        hand_entry = table.hand_log[0] if table.hand_log else None
+        if hand_entry is None:
+            return
+
+        actions = await table_service.get_actions_for_hand(table.table_id, table.hand_number)
+
+        results: dict[str, dict] = {}
+        for shown in hand_entry.shown_hands:
+            results[shown.session_id] = {
+                "hole_cards": [c.to_dict() for c in shown.hole_cards],
+                "best_hand": shown.best_hand,
+                "board": [c.to_dict() for c in hand_entry.board.primary],
+                "amount_won": shown.amount_won,
+            }
+        # Include winners who folded (won uncontested) — they have no shown_hands entry
+        for winner in hand_entry.winners:
+            if winner.session_id not in results:
+                results[winner.session_id] = {
+                    "hole_cards": [],
+                    "best_hand": winner.hand_description or "",
+                    "board": [c.to_dict() for c in hand_entry.board.primary],
+                    "amount_won": winner.amount_won,
+                }
+
+        import uuid as _uuid
+        await table_service.persist_hand(
+            hand_id=str(_uuid.uuid4()),
+            actions=actions,
+            results=results,
+            table_id=table.table_id,
+            hand_number=table.hand_number,
+            rules_snapshot=table.rules,
+            started_at=table.hand_started_at or hand_entry.completed_at,
+            ended_at=hand_entry.completed_at,
+        )
+    except Exception:
+        logger.exception(f"Failed to persist hand {table.hand_number} for table {table.table_id}")
+
+
 async def _advance_street_or_showdown(
     table_id: str,
     session_id: str,
@@ -866,6 +932,9 @@ async def _advance_street_or_showdown(
         )
         await table_service.save_table(table)
         await table_service.publish_event(table_id, broadcast_msg)
+
+        # Persist hand to PostgreSQL (fire-and-forget — does not delay gameplay)
+        asyncio.create_task(_persist_hand_to_db(table, table_service))
 
         # End hand after a short delay to allow clients to display showdown
         await asyncio.sleep(3)
@@ -1613,6 +1682,7 @@ async def _handle_approve_sit_down(
                 seat=seat,
                 status=status,
                 is_admin=False,
+                buy_in=chips,
             )
             table.players[target_id] = new_player
 
@@ -1625,6 +1695,17 @@ async def _handle_approve_sit_down(
             table.action_seq += 1
 
             await table_service.save_table(table)
+
+            import json as _json
+            asyncio.create_task(table_service.persist_table_if_missing(
+                table_id, _json.dumps(table.rules.to_dict())
+            ))
+            asyncio.create_task(table_service.persist_stack_transaction(
+                table_id=table_id,
+                session_id=target_id,
+                transaction_type="buyin",
+                amount=chips,
+            ))
 
             # Build a public player dict (no hole cards)
             player_dict = new_player.to_dict()
@@ -1744,6 +1825,14 @@ async def _handle_stand_up(
                 })
                 return
 
+            buyout_amount = player.stack
+            # Record to leaderboard before removing
+            table.leaderboard.append({
+                "session_id": session_id,
+                "name": player.name,
+                "buy_in": player.buy_in,
+                "final_stack": player.stack,
+            })
             del table.players[session_id]
             if session_id in table.player_join_order:
                 table.player_join_order.remove(session_id)
@@ -1755,11 +1844,20 @@ async def _handle_stand_up(
 
             await table_service.save_table(table)
 
+            if buyout_amount > 0:
+                asyncio.create_task(table_service.persist_stack_transaction(
+                    table_id=table_id,
+                    session_id=session_id,
+                    transaction_type="buyout",
+                    amount=buyout_amount,
+                ))
+
             broadcast_msg = _build_event_message(
                 table, "player_stood_up", session_id,
                 removed_players=[session_id],
                 player_join_order=table.player_join_order,
                 spectators=table.spectators,
+                leaderboard=table.leaderboard,
             )
             await table_service.publish_event(table_id, broadcast_msg)
 
@@ -1908,6 +2006,15 @@ async def _handle_host_stand_up(
                 })
                 return
 
+            target_player = table.players[target_id]
+            buyout_amount = target_player.stack
+            # Record to leaderboard before removing
+            table.leaderboard.append({
+                "session_id": target_id,
+                "name": target_player.name,
+                "buy_in": target_player.buy_in,
+                "final_stack": target_player.stack,
+            })
             del table.players[target_id]
             if target_id in table.player_join_order:
                 table.player_join_order.remove(target_id)
@@ -1919,12 +2026,21 @@ async def _handle_host_stand_up(
 
             await table_service.save_table(table)
 
+            if buyout_amount > 0:
+                asyncio.create_task(table_service.persist_stack_transaction(
+                    table_id=table_id,
+                    session_id=target_id,
+                    transaction_type="buyout",
+                    amount=buyout_amount,
+                ))
+
             broadcast_msg = _build_event_message(
                 table, "player_stood_up", session_id,
                 target_session_id=target_id,
                 removed_players=[target_id],
                 player_join_order=table.player_join_order,
                 spectators=table.spectators,
+                leaderboard=table.leaderboard,
             )
             await table_service.publish_event(table_id, broadcast_msg)
 

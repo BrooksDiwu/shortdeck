@@ -367,6 +367,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       if ('player_join_order' in patch) tableUpdates.player_join_order = patch.player_join_order as string[]
       if ('admin_id' in patch) tableUpdates.admin_id = patch.admin_id as string
       if ('hand_log' in patch) tableUpdates.hand_log = patch.hand_log as Table['hand_log']
+      if ('leaderboard' in patch) tableUpdates.leaderboard = patch.leaderboard as Table['leaderboard']
+      if ('pending_rebuys' in patch) tableUpdates.pending_rebuys = patch.pending_rebuys as Table['pending_rebuys']
 
       // Handle event_type-implied state changes not present as explicit fields
       if (evType === 'game_paused') {
