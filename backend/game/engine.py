@@ -251,14 +251,15 @@ class GameEngine:
             winnings[sid] = winnings.get(sid, 0) + per_player
 
         if remainder > 0:
-            # Odd chip(s) go to first winner left of dealer
+            # Odd chip(s) go to first winner clockwise after dealer (descending seat order)
             seated_winners = sorted(
                 [table.players[sid] for sid in winners if sid in table.players],
                 key=lambda p: p.seat,
+                reverse=True,
             )
             dealer_seat = table.dealer_seat
-            # Find first winner whose seat > dealer_seat, wrapping around
-            after_dealer = [p for p in seated_winners if p.seat > dealer_seat]
+            # Clockwise = descending; find first winner whose seat < dealer_seat, wrapping around
+            after_dealer = [p for p in seated_winners if p.seat < dealer_seat]
             if not after_dealer:
                 after_dealer = seated_winners  # wrap around
             odd_recipient = after_dealer[0].session_id
@@ -340,11 +341,11 @@ class GameEngine:
         )
         seats = sorted(
             (
-                table.players[sid].seat,
-                sid,
-            )
-            for sid in showdown_player_ids
-            if sid in table.players
+                (table.players[sid].seat, sid)
+                for sid in showdown_player_ids
+                if sid in table.players
+            ),
+            reverse=True,
         )
         if not seats:
             return []
@@ -361,11 +362,12 @@ class GameEngine:
         if aggressor_sid is not None:
             start_seat = table.last_aggressor_seat
         else:
-            after_dealer = [seat for seat, _ in seats if seat > table.dealer_seat]
+            # Clockwise = descending seat order
+            after_dealer = [seat for seat, _ in seats if seat < table.dealer_seat]
             start_seat = after_dealer[0] if after_dealer else seats[0][0]
 
-        rotated = [sid for seat, sid in seats if seat >= start_seat]
-        rotated.extend([sid for seat, sid in seats if seat < start_seat])
+        rotated = [sid for seat, sid in seats if seat <= start_seat]
+        rotated.extend([sid for seat, sid in seats if seat > start_seat])
         return rotated
 
     def refresh_showdown_hand_log(self) -> None:
@@ -549,19 +551,20 @@ class GameEngine:
         return result
 
     def _next_dealer_seat(self) -> int:
-        """Find next active player seat after current dealer."""
+        """Find next active player seat after current dealer (clockwise = descending seat order)."""
         table = self.table
         active = sorted(
             [p for p in table.players.values() if p.status not in ("sitting_out", "disconnected")],
             key=lambda p: p.seat,
+            reverse=True,
         )
         if not active:
             return table.dealer_seat
-        # Find seat strictly after current dealer, wrapping around
-        after = [p for p in active if p.seat > table.dealer_seat]
+        # Clockwise = descending seat numbers; find seat strictly below current dealer, wrapping around
+        after = [p for p in active if p.seat < table.dealer_seat]
         if after:
             return after[0].seat
-        return active[0].seat  # wrap around
+        return active[0].seat  # wrap around to highest seat
 
     def _resolve_vote(self) -> None:
         """If pending_vote and votes_for > votes_against, swap rules."""

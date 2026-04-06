@@ -183,7 +183,8 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen
 
   const potTopClass = hasDoubleBoard ? "top-[24%]" : "top-[35%]";
   const boardTopClass = hasDoubleBoard ? "top-[45%]" : "top-[47%]";
-  const centerControlsTopClass = board.length > 0
+  const hasVisibleCommunityCards = board.length > 0 || rabbitHuntCards.length > 0;
+  const centerControlsTopClass = hasVisibleCommunityCards
     ? hasDoubleBoard
       ? "top-[72%]"
       : "top-[66%]"
@@ -246,7 +247,7 @@ const PokerTable = ({ table, localPlayerId, holeCards, onMenuOpen, onHandLogOpen
         </div>
 
         {/* Community cards */}
-        {board.length > 0 && (
+        {hasVisibleCommunityCards && (
           <div className={`absolute ${boardTopClass} left-1/2 z-10 w-[min(94%,360px)] -translate-x-1/2 -translate-y-1/2`}>
             {hasDoubleBoard ? (
               <div className="flex flex-col items-center gap-2 px-3 py-2.5">

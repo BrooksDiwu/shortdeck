@@ -135,6 +135,7 @@ class BettingEngine:
         seated = sorted(
             [p for p in table.players.values() if p.status not in ("sitting_out", "disconnected")],
             key=lambda p: p.seat,
+            reverse=True,
         )
         if len(seated) < 2:
             return

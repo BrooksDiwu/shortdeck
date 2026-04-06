@@ -855,8 +855,8 @@ def _is_betting_round_complete(table) -> bool:
     if aggressor_player.status in ("folded", "all_in"):
         # If the aggressor is out, we still need action to pass their seat marker once.
         # Use the first active seat to the left of the aggressor as the completion marker.
-        after_aggressor = sorted(seat for seat in active_seats if seat > table.last_aggressor_seat)
-        completion_seat = after_aggressor[0] if after_aggressor else min(active_seats)
+        after_aggressor = sorted((seat for seat in active_seats if seat < table.last_aggressor_seat), reverse=True)
+        completion_seat = after_aggressor[0] if after_aggressor else max(active_seats)
         return table.current_action_seat == completion_seat
     if table.last_aggressor_seat not in active_seats:
         # Aggressor is disconnected. Round is complete only if they have already acted
@@ -876,15 +876,16 @@ def _should_auto_runout(table) -> bool:
 
 
 def _advance_action(table) -> None:
-    """Move action to the next active player after an action."""
+    """Move action to the next active player (clockwise = descending seat order)."""
     active = sorted(
         [p for p in table.players.values() if p.status == "active"],
         key=lambda p: p.seat,
+        reverse=True,
     )
     if not active:
         return
     current = table.current_action_seat
-    after = [p for p in active if p.seat > current]
+    after = [p for p in active if p.seat < current]
     nxt = after[0] if after else active[0]
     table.current_action_seat = nxt.seat
 
@@ -1147,12 +1148,13 @@ async def _advance_street_or_showdown(
         # Deal next street (deal_street already increments action_seq)
         engine.deal_street(next_street)
 
-        # First to act post-flop: first active player left of dealer
+        # First to act post-flop: first active player clockwise after dealer (descending seat order)
         active_sorted = sorted(
             [p for p in table.players.values() if p.status == "active"],
             key=lambda p: p.seat,
+            reverse=True,
         )
-        after_dealer = [p for p in active_sorted if p.seat > table.dealer_seat]
+        after_dealer = [p for p in active_sorted if p.seat < table.dealer_seat]
         first_to_act = (after_dealer[0] if after_dealer else active_sorted[0]) if active_sorted else None
         if first_to_act:
             table.current_action_seat = first_to_act.seat
