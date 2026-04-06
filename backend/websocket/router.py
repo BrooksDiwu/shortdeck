@@ -741,7 +741,7 @@ async def _handle_start_hand(
 
             active_players = [
                 p for p in table.players.values()
-                if p.status not in ("sitting_out", "disconnected")
+                if p.status not in ("sitting_out", "disconnected") and p.stack > 0
             ]
             if len(active_players) < 2:
                 await manager.send_personal(table_id, session_id, {
@@ -831,8 +831,11 @@ def _is_betting_round_complete(table) -> bool:
     active = [p for p in table.players.values() if p.status == "active"]
     if not active:
         return True
-    max_bet = max(p.current_bet for p in active)
-    if not all(p.current_bet == max_bet for p in active):
+    # Max bet must include all-in players — active players still need to match
+    # (or fold to) an all-in raise before the round can end.
+    all_in = [p for p in table.players.values() if p.status == "all_in"]
+    max_bet = max(p.current_bet for p in active + all_in)
+    if not all(p.current_bet >= max_bet for p in active):
         return False
     # All bets are equal. If there's no aggressor recorded, treat as complete.
     # Otherwise, the round ends when current_action_seat cycles back to the last
@@ -847,9 +850,14 @@ def _is_betting_round_complete(table) -> bool:
     aggressor_player = next(
         (p for p in table.players.values() if p.seat == table.last_aggressor_seat), None
     )
-    aggressor_out = aggressor_player is None or aggressor_player.status in ("folded", "all_in")
-    if aggressor_out:
+    if aggressor_player is None:
         return True
+    if aggressor_player.status in ("folded", "all_in"):
+        # If the aggressor is out, we still need action to pass their seat marker once.
+        # Use the first active seat to the left of the aggressor as the completion marker.
+        after_aggressor = sorted(seat for seat in active_seats if seat > table.last_aggressor_seat)
+        completion_seat = after_aggressor[0] if after_aggressor else min(active_seats)
+        return table.current_action_seat == completion_seat
     if table.last_aggressor_seat not in active_seats:
         # Aggressor is disconnected. Round is complete only if they have already acted
         # (their current_bet matches the max bet, meaning their auto-action ran).

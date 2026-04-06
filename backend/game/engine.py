@@ -513,10 +513,8 @@ class GameEngine:
         # Resolve pending vote
         self._resolve_vote()
 
-        # Rotate dealer to next active player
-        table.dealer_seat = self._next_dealer_seat()
-
-        # Reset player statuses
+        # Reset player statuses BEFORE rotating dealer so busted players
+        # are sitting_out and won't be considered for the dealer seat.
         for p in table.players.values():
             if p.status in ("active", "all_in", "folded"):
                 # Players who were auto-folded due to disconnect (disconnect_at is set) sit out
@@ -525,6 +523,9 @@ class GameEngine:
             p.total_in = 0
             p.hole_cards = []
             p.is_revealed = []
+
+        # Rotate dealer to next active player
+        table.dealer_seat = self._next_dealer_seat()
 
         table.pot = 0
         table.side_pots = []
